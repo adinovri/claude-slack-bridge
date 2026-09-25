@@ -1,0 +1,33 @@
+[Unit]
+Description=Claude Slack Bridge — background task watchdog
+
+[Service]
+Type=oneshot
+ExecStart=%h/claude-slack-bridge/scripts/csb-bg-watchdog
+StandardOutput=journal
+StandardError=journal
+
+# --- env ---
+# Registry path MUST match the bridge's BG_REGISTRY (defaults to
+# ~/.claude-slack-bridge/bg_registry.json in both places when unset).
+# CLAUDE_WORKSPACE is where csb-bg-claude spawned the tmux sessions from —
+# only needed by csb-bg-claude itself, but harmless here.
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
+Environment=CLAUDE_CONFIG_DIR=%h/.claude
+Environment=BG_REGISTRY=%h/.claude-slack-bridge/bg_registry.json
+Environment=CSB_NOTIFY_BIN=%h/claude-slack-bridge/scripts/csb-notify
+
+# SLACK_BOT_TOKEN, for posting [bg] results back into the Slack thread. Read
+# from the bridge's own .env (mode 600) so the token lives in exactly one
+# place: it is never passed on a command line and never written to the
+# registry file. Later EnvironmentFile= entries win, so the ~/.config file
+# below can still override it.
+EnvironmentFile=-%h/claude-slack-bridge/.env
+
+# Optional Telegram secrets (kept OUT of this world-readable unit).
+# Create ~/.config/claude-slack-bridge.env with mode 600:
+#   TELEGRAM_BOT_TOKEN=123456:AA...
+#   TELEGRAM_CHAT_ID=1234567890
+# The leading "-" makes the file optional (no error if absent).
+EnvironmentFile=-%h/.config/claude-slack-bridge.env

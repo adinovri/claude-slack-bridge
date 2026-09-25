@@ -1,0 +1,4 @@
+# Compatible-release pins: patch and minor updates (including security fixes)
+# are picked up, a breaking major bump is not. Re-pin deliberately.
+slack-bolt~=1.21
+python-dotenv~=1.0

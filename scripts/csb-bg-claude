@@ -1,0 +1,309 @@
+#!/usr/bin/env python3
+"""
+csb-bg-claude — Launch a Claude task in a background tmux session.
+
+Usage: csb-bg-claude <description> <task_prompt> [--notify-json JSON] [--resume-session SESSION_ID]
+
+Spawns an interactive Claude TUI in a detached tmux session, injects the
+task prompt, and registers the session in $BG_REGISTRY (default:
+~/.claude-slack-bridge/bg_registry.json). csb-bg-watchdog.timer polls the registry
+and notifies when done.
+
+Environment:
+  BG_REGISTRY          shared registry file path (default: ~/.claude-slack-bridge/bg_registry.json)
+  CLAUDE_WORKSPACE     workspace cwd for the spawned Claude session (REQUIRED)
+  CLAUDE_CONFIG_DIR    claude config dir (default: ~/.claude)
+  CLAUDE_CLI           path to claude binary (default: claude)
+  CLAUDE_MODEL         model name (default: claude-sonnet-4-6)
+  CLAUDE_PERMISSION_MODE  permission mode (default: bypassPermissions)
+  BG_DISALLOWED_TOOLS  comma-separated tool denylist (default: DISALLOWED_TOOLS below)
+  BRIDGE_TUI_BOOT      seconds to wait for TUI prompt (default: 20)
+
+--notify-json: JSON string for notification target. Default: {"type":"telegram"}
+  Slack: {"type":"slack","channel":"C...","thread_ts":"...","ack_ts":"..."}
+
+  NEVER put a bot token in this JSON — it would be visible in `ps` and would be
+  persisted to the registry file. The watchdog reads SLACK_BOT_TOKEN from its
+  own environment instead. Any bot_token key found here is stripped before the
+  entry is written to disk.
+
+--resume-session: Resume an existing Claude session by its UUID (uses --resume flag).
+  When set, the existing session's transcript is continued instead of a fresh one.
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+def _require_env(name: str) -> str:
+    val = os.environ.get(name)
+    if not val:
+        print(
+            f"[csb-bg-claude] required env var {name} is not set. "
+            f"Set it explicitly (e.g. via systemd Environment= or the bridge's .env).",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return val
+
+
+# Slack write tools that act as the human operator (user-OAuth MCP servers,
+# as opposed to the bot token). The bridge already posts every reply via
+# SLACK_BOT_TOKEN, so the spawned agent must never call these — otherwise its
+# messages appear under the operator's own Slack identity instead of the bot's.
+# Project instructions can ask for this, but the model occasionally forgets;
+# this denylist is the harness-level enforcement.
+#
+# Keep in sync with src/claude_runner.py:DISALLOWED_TOOLS — the [alt] and
+# default runners pass the same denylist, and a bg task without it would be
+# the one hole in that guarantee.
+DISALLOWED_TOOLS = [
+    "mcp__claude_ai_Slack__slack_send_message",
+    "mcp__claude_ai_Slack__slack_send_message_draft",
+    "mcp__claude_ai_Slack__slack_schedule_message",
+    "mcp__claude_ai_Slack__slack_add_reaction",
+    "mcp__claude_ai_Slack__slack_create_canvas",
+    "mcp__claude_ai_Slack__slack_update_canvas",
+]
+
+CLAUDE_CLI    = os.environ.get("CLAUDE_CLI",             "claude")
+CLAUDE_CONFIG = Path(os.environ.get("CLAUDE_CONFIG_DIR",
+                     os.path.expanduser("~/.claude")))
+CLAUDE_MODEL  = os.environ.get("CLAUDE_MODEL",           "claude-sonnet-4-6")
+CLAUDE_PERM   = os.environ.get("CLAUDE_PERMISSION_MODE", "bypassPermissions")
+DISALLOWED    = os.environ.get("BG_DISALLOWED_TOOLS",    ",".join(DISALLOWED_TOOLS))
+WORKSPACE     = Path(_require_env("CLAUDE_WORKSPACE"))
+REGISTRY_FILE = Path(os.environ.get(
+    "BG_REGISTRY",
+    str(Path.home() / ".claude-slack-bridge" / "bg_registry.json"),
+))
+TUI_BOOT      = float(os.environ.get("BRIDGE_TUI_BOOT",  "20"))
+
+_STATUSBAR_RE   = re.compile(r"\d[\d.]*K?/\d[\d.]*K")
+_MENU_CURSOR_RE = re.compile(r"^\s*❯\s*\d+\.", re.M)
+
+
+def _tmux(*args):
+    return subprocess.run(["tmux", *args], capture_output=True, text=True)
+
+
+def _session_alive(name):
+    return _tmux("has-session", "-t", name).returncode == 0
+
+
+def _mangled_cwd():
+    return re.sub(r"[^a-zA-Z0-9]", "-", str(WORKSPACE))
+
+
+def _transcript_path(claude_uuid):
+    return CLAUDE_CONFIG / "projects" / _mangled_cwd() / f"{claude_uuid}.jsonl"
+
+
+def _real_prompt_marker(pane):
+    return (
+        any(kw in pane for kw in ("shift+tab to cycle", "for shortcuts", "│ >"))
+        or bool(_STATUSBAR_RE.search(pane))
+    )
+
+
+def _is_interstitial(pane):
+    if _real_prompt_marker(pane):
+        return False
+    return bool(_MENU_CURSOR_RE.search(pane)) or "Enter to confirm" in pane
+
+
+def _wait_ready(tmux_name):
+    deadline = time.monotonic() + TUI_BOOT
+    last_pane = None
+    stable_hits = 0
+    dismissed = 0
+    while time.monotonic() < deadline:
+        if not _session_alive(tmux_name):
+            return False
+        pane = _tmux("capture-pane", "-p", "-t", tmux_name).stdout
+        if _is_interstitial(pane) and dismissed < 5:
+            _tmux("send-keys", "-t", tmux_name, "Enter")
+            dismissed += 1
+            stable_hits = 0
+            last_pane = None
+            time.sleep(0.8)
+            continue
+        ready = _real_prompt_marker(pane)
+        if ready and pane == last_pane:
+            stable_hits += 1
+            if stable_hits >= 2:
+                time.sleep(0.8)
+                return True
+        else:
+            stable_hits = 0
+        last_pane = pane
+        time.sleep(0.4)
+    return False
+
+
+def _send_prompt(tmux_name, prompt):
+    probe = next(
+        (ln.strip()[:40] for ln in prompt.splitlines() if len(ln.strip()) >= 4),
+        prompt.strip()[:40],
+    )
+    # Long prompts take the TUI longer to render after a bracketed paste;
+    # scale the paste->Enter gap with prompt size so Enter isn't swallowed.
+    settle = max(0.6, min(3.0, len(prompt) / 2000.0))
+    for paste_try in range(3):
+        if paste_try > 0:
+            _tmux("send-keys", "-t", tmux_name, "Escape")
+            time.sleep(0.2)
+            _tmux("send-keys", "-t", tmux_name, "C-u")
+            time.sleep(0.2)
+        _tmux("set-buffer", "--", prompt)
+        _tmux("paste-buffer", "-p", "-t", tmux_name)
+        rendered = False
+        deadline = time.monotonic() + 6
+        while time.monotonic() < deadline:
+            time.sleep(0.2)
+            pane = _tmux("capture-pane", "-p", "-t", tmux_name).stdout
+            if (probe and probe in pane) or "[Pasted text #" in pane:
+                rendered = True
+                break
+        if rendered:
+            time.sleep(settle)
+            _tmux("send-keys", "-t", tmux_name, "Enter")
+            return True
+        print(f"[csb-bg-claude] paste not visible on {tmux_name}, retry {paste_try+1}/3",
+              file=sys.stderr)
+    _tmux("send-keys", "-t", tmux_name, "Enter")
+    return False
+
+
+def _await_transcript_growth(tmux_name, jsonl, tail_offset, timeout=45, resends=3):
+    """Wait until Claude ingests the prompt (jsonl grows past tail_offset).
+
+    Mirrors the claude-cli-bridge submit-verify pattern: after each attempt,
+    if the transcript hasn't grown, resend Enter (with paste-mode escape) and
+    keep watching. Returns True on growth, False if all resends exhausted.
+    """
+    per_attempt = max(6, timeout // (resends + 1))
+    for attempt in range(resends + 1):
+        deadline = time.monotonic() + per_attempt
+        while time.monotonic() < deadline:
+            time.sleep(0.5)
+            if jsonl.exists() and jsonl.stat().st_size > tail_offset:
+                return True
+        if attempt >= resends:
+            break
+        print(f"[csb-bg-claude] no transcript growth on {tmux_name}, "
+              f"resend {attempt+1}/{resends}", file=sys.stderr)
+        _tmux("send-keys", "-t", tmux_name, "Escape")
+        time.sleep(0.15)
+        _tmux("send-keys", "-t", tmux_name, "Enter")
+    return False
+
+
+def _load_registry():
+    try:
+        return json.loads(REGISTRY_FILE.read_text())
+    except Exception:
+        return []
+
+
+def _save_registry(entries):
+    REGISTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    REGISTRY_FILE.write_text(json.dumps(entries, indent=2))
+    # The registry names channels, threads and task descriptions — keep it
+    # owner-only regardless of the caller's umask.
+    try:
+        REGISTRY_FILE.chmod(0o600)
+    except OSError:
+        pass
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Launch Claude task in background tmux")
+    parser.add_argument("description", help="Human-readable task description")
+    parser.add_argument("task_prompt", help="Prompt to send to Claude")
+    parser.add_argument(
+        "--notify-json", default=None,
+        help='JSON notification config, e.g. \'{"type":"telegram"}\' or Slack config',
+    )
+    parser.add_argument(
+        "--resume-session", default=None, metavar="SESSION_ID",
+        help="Resume an existing Claude session by UUID (uses --resume instead of --session-id)",
+    )
+    args = parser.parse_args()
+
+    description = args.description
+    task_prompt = args.task_prompt
+    notify = json.loads(args.notify_json) if args.notify_json else {"type": "telegram"}
+    # Defence in depth: a caller on an older bridge may still pass the token
+    # inline. Drop it here so it never reaches the registry file — the watchdog
+    # resolves SLACK_BOT_TOKEN from its own environment.
+    if notify.pop("bot_token", None):
+        print("[csb-bg-claude] stripped bot_token from --notify-json "
+              "(watchdog reads SLACK_BOT_TOKEN from env)", file=sys.stderr)
+
+    bg_id     = uuid.uuid4().hex[:8]
+    tmux_name = f"csb-bg-{bg_id}"
+
+    if args.resume_session:
+        claude_uuid  = args.resume_session
+        session_flag = ["--resume", claude_uuid]
+    else:
+        claude_uuid  = str(uuid.uuid4())
+        session_flag = ["--session-id", claude_uuid]
+
+    jsonl = _transcript_path(claude_uuid)
+
+    r = _tmux(
+        "new-session", "-d", "-s", tmux_name,
+        "-x", "220", "-y", "50",
+        "-c", str(WORKSPACE),
+        "env", f"CLAUDE_CONFIG_DIR={CLAUDE_CONFIG}",
+        CLAUDE_CLI, "--model", CLAUDE_MODEL,
+        "--permission-mode", CLAUDE_PERM,
+        "--disallowed-tools", DISALLOWED,
+        *session_flag,
+    )
+    if r.returncode != 0:
+        print(f"[csb-bg-claude] tmux spawn failed: {r.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
+
+    if not _wait_ready(tmux_name):
+        print("[csb-bg-claude] TUI boot timeout — continuing optimistically", file=sys.stderr)
+
+    tail_offset = jsonl.stat().st_size if jsonl.exists() else 0
+    _send_prompt(tmux_name, task_prompt)
+
+    if not _await_transcript_growth(tmux_name, jsonl, tail_offset):
+        print(f"[csb-bg-claude] prompt could not be submitted to the TUI "
+              f"(no transcript growth after resends) — tearing down {tmux_name}",
+              file=sys.stderr)
+        _tmux("kill-session", "-t", tmux_name)
+        sys.exit(2)
+
+    entry = {
+        "bg_id":          bg_id,
+        "tmux_name":      tmux_name,
+        "claude_uuid":    claude_uuid,
+        "jsonl_path":     str(jsonl),
+        "tail_offset":    tail_offset,
+        "description":    description,
+        "started_at":     datetime.now(timezone.utc).isoformat(),
+        "slack_thread_ts": notify.get("thread_ts"),
+        "notify":         notify,
+    }
+    entries = _load_registry()
+    entries.append(entry)
+    _save_registry(entries)
+
+    print(f"Background Claude launched [{tmux_name}] — {description}")
+
+
+if __name__ == "__main__":
+    main()

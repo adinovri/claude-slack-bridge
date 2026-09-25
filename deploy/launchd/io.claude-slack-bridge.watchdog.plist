@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS LaunchAgent for the [bg] runner watchdog — the launchd equivalent
+  of csb-bg-watchdog.timer on Linux. Fires every 15s (StartInterval), scans
+  ~/.claude-slack-bridge/bg_registry.json, posts results back to Slack, cleans up.
+
+  The wrapping bash -c: source the bridge .env (for SLACK_BOT_TOKEN) and the
+  optional Telegram env file (mode 600) if they exist, then exec the watchdog.
+  "set -a" exports what they define. Sourcing keeps SLACK_BOT_TOKEN and
+  TELEGRAM_* out of this plist, so ~/Library/LaunchAgents/*.plist
+  (world-readable) never holds secrets. If the Telegram file is absent the
+  watchdog runs without Telegram — that's fine, Slack notify still works.
+
+  The installer (run_mac.sh) sed-substitutes /Users/USERNAME and the
+  Homebrew prefix.
+
+  Load / start:
+    launchctl bootstrap gui/$(id -u) \
+      ~/Library/LaunchAgents/io.claude-slack-bridge.watchdog.plist
+    launchctl enable    gui/$(id -u)/io.claude-slack-bridge.watchdog
+    launchctl kickstart -k gui/$(id -u)/io.claude-slack-bridge.watchdog
+
+  Unload:
+    launchctl bootout gui/$(id -u) \
+      ~/Library/LaunchAgents/io.claude-slack-bridge.watchdog.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.claude-slack-bridge.watchdog</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <string>set -a; [ -f "/Users/USERNAME/claude-slack-bridge/.env" ] &amp;&amp; . "/Users/USERNAME/claude-slack-bridge/.env"; [ -f "$HOME/.config/claude-slack-bridge.env" ] &amp;&amp; . "$HOME/.config/claude-slack-bridge.env"; set +a; exec "/Users/USERNAME/claude-slack-bridge/scripts/csb-bg-watchdog"</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/USERNAME/claude-slack-bridge</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/USERNAME</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>BG_REGISTRY</key>
+    <string>/Users/USERNAME/.claude-slack-bridge/bg_registry.json</string>
+    <key>CSB_NOTIFY_BIN</key>
+    <string>/Users/USERNAME/claude-slack-bridge/scripts/csb-notify</string>
+  </dict>
+
+  <!-- Fire immediately on load, then every 15s. If a previous run is still
+       going, launchd skips the next tick instead of spawning a second copy. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>15</integer>
+
+  <!-- Oneshot: exit is normal, do NOT keep alive. -->
+  <key>KeepAlive</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/USERNAME/claude-slack-bridge/logs/watchdog.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/USERNAME/claude-slack-bridge/logs/watchdog.log</string>
+</dict>
+</plist>

@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# csb-bg — Run an arbitrary shell command in the background via systemd-run,
+# then send a Telegram notification on completion (success or failure).
+#
+# This is a generic helper for one-off commands (DB exports, batch jobs, etc.),
+# NOT the Slack-bridge [bg] path. The bridge uses csb-bg-claude directly for
+# Claude sessions.
+#
+# Usage:
+#   csb-bg <description> <command> [args...]
+#
+# Examples:
+#   csb-bg "nightly backup" tar -czf /tmp/backup.tgz /srv/data
+#   csb-bg "run migration" bash ./scripts/migrate.sh
+#
+# Environment:
+#   CSB_NOTIFY_BIN   path to csb-notify (default: sibling of this script)
+#
+# Requires: systemd (user session), csb-notify on the same host.
+set -euo pipefail
+
+if [ "$#" -lt 2 ]; then
+  echo "Usage: csb-bg <description> <command> [args...]" >&2
+  exit 1
+fi
+
+DESCRIPTION="$1"
+shift
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NOTIFY_SCRIPT="${CSB_NOTIFY_BIN:-${SCRIPT_DIR}/csb-notify}"
+
+if [ ! -x "$NOTIFY_SCRIPT" ]; then
+  echo "csb-bg: notifier not executable at $NOTIFY_SCRIPT" >&2
+  exit 1
+fi
+
+# Serialize the command args as a shell-safe quoted string. %q is a real shell
+# quote, so the inner `eval` re-expands exactly these argv entries and nothing
+# else.
+CMD_SERIALIZED=$(printf '%q ' "$@")
+
+# The wrapper body below is a FIXED, literal script: the description and the
+# command reach it as environment variables, never interpolated into the code
+# text. The previous version spliced the description straight into this string
+# after escaping only single quotes, so `csb-bg 'x$(whoami)' ...` executed the
+# substitution inside the unit.
+read -r -d '' INNER <<'INNEREOF' || true
+# Secrets are sourced here, inside the unit. Passing them with --setenv would
+# expose them in `ps` and in `systemctl show` for the unit's whole lifetime.
+set -a
+[ -f "$HOME/.config/claude-slack-bridge.env" ] && . "$HOME/.config/claude-slack-bridge.env"
+set +a
+
+OUTPUT=$(eval "$CSB_BG_CMD" 2>&1)
+STATUS=$?
+if [ "$STATUS" -eq 0 ]; then
+  MSG="✅ *Done:* $CSB_BG_DESC"
+else
+  TAIL=$(printf '%s' "$OUTPUT" | tail -10)
+  MSG=$(printf '❌ *Failed:* %s\n```\n%s\n```' "$CSB_BG_DESC" "$TAIL")
+fi
+"$CSB_BG_NOTIFY" "$MSG"
+INNEREOF
+
+systemd-run --user --no-block \
+  --unit="csb-bg-$(date +%s)" \
+  --description="csb-bg: ${DESCRIPTION}" \
+  --setenv=PATH="${PATH}" \
+  --setenv=HOME="${HOME}" \
+  --setenv=CSB_BG_DESC="${DESCRIPTION}" \
+  --setenv=CSB_BG_CMD="${CMD_SERIALIZED}" \
+  --setenv=CSB_BG_NOTIFY="${NOTIFY_SCRIPT}" \
+  -- bash -c "$INNER"
+
+echo "Launched in background: ${DESCRIPTION}"
