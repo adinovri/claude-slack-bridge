@@ -31,6 +31,7 @@ from .config import (
     ALT_MARKER,
     BG_MARKER,
     BG_REGISTRY,
+    BOT_ALLOWED_TOOLS,
     BOT_CONTEXT_CHANNEL,
     BOT_CONTEXT_LIMIT,
     CLAUDE_CLI,
@@ -226,6 +227,18 @@ def _fetch_bot_context(client, channel: str, thread_ts: str) -> str:
     return ctx
 
 
+def _allowed_command_list() -> str:
+    """BOT_ALLOWED_TOOLS rules as plain command prefixes for the prompt, e.g.
+    "Bash(gcloud logging read *)" -> "- gcloud logging read ..."."""
+    lines = []
+    for rule in BOT_ALLOWED_TOOLS:
+        if rule.startswith("Bash(") and rule.endswith(")"):
+            cmd = rule[len("Bash("):-1]
+            cmd = cmd[:-2] + " ..." if cmd.endswith(" *") else cmd
+            lines.append(f"- {cmd}")
+    return "\n".join(lines) or "- (none)"
+
+
 def _build_untrusted_prompt(event: dict, raw_text: str, context_text: str) -> str:
     channel = event["channel"]
     thread_ts = event.get("thread_ts") or event["ts"]
@@ -240,11 +253,18 @@ def _build_untrusted_prompt(event: dict, raw_text: str, context_text: str) -> st
         f"Task: analyze the alert(s) referenced in the thread. For each, say "
         f"whether it looks like a real attack attempt or a false positive / "
         f"expected activity, the severity, the evidence, and a recommended "
-        f"action. You may run read-only gcloud commands (gcloud logging read, "
-        f"gcloud ... list, gcloud ... describe) to check audit logs and "
-        f"resources; always pass --project explicitly and keep --limit / "
-        f"--freshness small. Do not print secrets, tokens or full log payloads "
-        f"— summarize them. If you could not verify something, say so.\n\n"
+        f"action.\n\n"
+        f"Tools: you have only the Bash tool, restricted to commands starting "
+        f"with one of these prefixes (anything else is denied):\n"
+        f"{_allowed_command_list()}\n"
+        f"Run exactly ONE such command per Bash call: no pipes, no &&, ||, ;, "
+        f"no redirects (2>&1, >), no $(...), and no other programs (which, head, "
+        f"grep, jq, echo, gcloud config ...). Use the command's own flags "
+        f"instead: --project (always, explicitly), --limit, --freshness, "
+        f"--format. A denied call means the command shape was not allowed — "
+        f"retry it in a simpler allowed form instead of giving up. Do not print "
+        f"secrets, tokens or full log payloads — summarize them. If you could "
+        f"not verify something, say so.\n\n"
         f"Reply concisely in the language of the workflow message. Reply as "
         f"plain text only; the bridge posts it for you.\n\n"
         f"<untrusted_slack_data>\n"
