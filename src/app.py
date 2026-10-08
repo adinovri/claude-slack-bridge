@@ -290,10 +290,17 @@ def handle_app_mention(event, client, context, logger):
     # Fires when the bot is @-mentioned in a channel/group/mpim.
     # Slack already filters by mention target; we only enforce the sender.
     sender = event.get("user")
+    if event.get("bot_id") or event.get("subtype") == "bot_message":
+        # Log the identity so a workflow/bot can be identified before it is
+        # ever allowlisted.
+        log.info(
+            "ignore app_mention from bot: bot_id=%s app_id=%s user=%s name=%r subtype=%s",
+            event.get("bot_id"), event.get("app_id"), sender,
+            (event.get("bot_profile") or {}).get("name"), event.get("subtype"),
+        )
+        return
     if sender != TRIGGER_USER_ID:
         log.info("ignore app_mention: sender=%s (not the authorized user)", sender)
-        return
-    if event.get("bot_id") or event.get("subtype") == "bot_message":
         return
     _dispatch(event, client, bot_user_id=context.get("bot_user_id"))
 
