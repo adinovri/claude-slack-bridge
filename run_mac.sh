@@ -133,6 +133,63 @@ if ! grep -qE '^AGENT_WORKSPACE=\S' .env || grep -qE '^AGENT_WORKSPACE=/path/to/
 fi
 ok "TRIGGER_USER_ID + AGENT_WORKSPACE set"
 
+# ----------------------------------------------------------------------------
+# Optional: bot triggers. Only checked when TRIGGER_BOT_IDS is set in .env.
+# Each mistake here fails silently at runtime (auth error, or the [bg] TUI
+# stuck on the "trust this folder" dialog), so catch them at install time.
+# ----------------------------------------------------------------------------
+env_val() {  # value of KEY in .env, unquoted, with a leading ~ expanded
+  local v
+  v="$(grep -E "^$1=" .env | tail -n1 | cut -d= -f2- | sed -e 's/^["'\'']//' -e 's/["'\'']$//')"
+  printf '%s' "${v/#\~/$HOME}"
+}
+if [ -n "$(env_val TRIGGER_BOT_IDS)" ]; then
+  say "verifying bot-trigger setup (TRIGGER_BOT_IDS is set)"
+  BOT_CFG="$(env_val BOT_CLAUDE_CONFIG_DIR)"
+  BOT_WS="$(env_val BOT_WORKSPACE)"
+  if [ -z "$BOT_CFG" ]; then
+    warn "BOT_CLAUDE_CONFIG_DIR is empty — bot runs reuse the operator config dir with only"
+    warn "'local' settings. A dedicated dir is recommended (README → Bot triggers)."
+  else
+    [ -d "$BOT_CFG" ] || die "BOT_CLAUDE_CONFIG_DIR=$BOT_CFG does not exist. create it and log in:  CLAUDE_CONFIG_DIR=$BOT_CFG claude  (then /login)"
+    grep -q '"oauthAccount"' "$BOT_CFG/.claude.json" 2>/dev/null \
+      || die "$BOT_CFG is not logged in. run:  CLAUDE_CONFIG_DIR=$BOT_CFG claude  (then /login)"
+    ok "bot config dir logged in: $BOT_CFG"
+    if [ -f "$BOT_CFG/settings.json" ]; then
+      ok "bot settings.json present"
+    else
+      warn "no $BOT_CFG/settings.json — the CLI flags still restrict bot runs, but a"
+      warn "settings.json with dontAsk + allow/deny is recommended (README → Bot triggers)."
+    fi
+  fi
+  if [ -n "$BOT_WS" ]; then
+    mkdir -p "$BOT_WS"
+    if [ -n "$BOT_CFG" ] && [ -f "$BOT_CFG/.claude.json" ]; then
+      # Pre-accept the workspace trust dialog, or the [bg] TUI never takes the prompt.
+      python3 - "$BOT_CFG/.claude.json" "$BOT_WS" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+ws = os.path.realpath(sys.argv[2])  # Claude keys projects by the real cwd
+d = json.load(open(path))
+proj = d.setdefault("projects", {}).setdefault(ws, {})
+if not proj.get("hasTrustDialogAccepted"):
+    proj["hasTrustDialogAccepted"] = True
+    json.dump(d, open(path, "w"), indent=2)
+PY
+      ok "bot workspace present + trusted: $BOT_WS"
+    fi
+  else
+    warn "BOT_WORKSPACE is empty — bot runs use AGENT_WORKSPACE as cwd."
+  fi
+  if grep -q gcloud <<<"$(env_val BOT_ALLOWED_TOOLS)" || [ -z "$(env_val BOT_ALLOWED_TOOLS)" ]; then
+    if command -v gcloud >/dev/null 2>&1; then
+      ok "gcloud found at $(command -v gcloud) — make sure that dir is on the service PATH (PATH in the bridge + watchdog plists)"
+    else
+      warn "gcloud not found — the default BOT_ALLOWED_TOOLS are gcloud commands, so bot runs can't do much."
+    fi
+  fi
+fi
+
 # ============================================================================
 # 5. Foreground fallback if --no-service
 # ============================================================================
