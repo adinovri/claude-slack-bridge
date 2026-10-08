@@ -23,6 +23,7 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 from . import alt_runner, claude_runner, thread_store
+from .slack_format import md_to_mrkdwn
 from .config import (
     AGENT_NAME,
     AGENT_WORKSPACE,
@@ -239,7 +240,7 @@ def _dispatch(event: dict, client, bot_user_id: str | None) -> None:
                 try:
                     client.chat_update(
                         channel=channel, ts=ack["ts"],
-                        text=_chunk_text(partial)[0],
+                        text=_chunk_text(md_to_mrkdwn(partial))[0],
                     )
                 except Exception:
                     log.debug("alt on_update chat_update skipped", exc_info=True)
@@ -260,7 +261,7 @@ def _dispatch(event: dict, client, bot_user_id: str | None) -> None:
                 "runner": "alt" if is_alt else "default",
             },
         )
-        body = result or "_(empty response)_"
+        body = md_to_mrkdwn(result) if result else "_(empty response)_"
         chunks = _chunk_text(body)
         log.info(
             "claude reply: chars=%d chunks=%d thread_ts=%s runner=%s",

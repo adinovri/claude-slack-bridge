@@ -18,10 +18,14 @@ Environment:
 import json
 import os
 import subprocess
+import sys
 import time
 import urllib.request
 
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from src.slack_format import md_to_mrkdwn  # noqa: E402
 
 NOTIFY_SCRIPT = Path(os.environ.get(
     "CSB_NOTIFY_BIN",
@@ -102,7 +106,7 @@ def _notify_slack(notify_cfg, result_text):
     channel   = notify_cfg["channel"]
     ack_ts    = notify_cfg["ack_ts"]
     thread_ts = notify_cfg["thread_ts"]
-    chunks    = _chunk_text(result_text)
+    chunks    = _chunk_text(md_to_mrkdwn(result_text))
 
     _slack_api("chat.update", bot_token, {
         "channel": channel,
