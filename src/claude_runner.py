@@ -3,8 +3,13 @@ import json
 import logging
 import os
 import subprocess
+from pathlib import Path
 
 from .config import (
+    BOT_ALLOWED_TOOLS,
+    BOT_CLAUDE_CONFIG_DIR,
+    BOT_DISALLOWED_TOOLS,
+    BOT_WORKSPACE,
     CLAUDE_CLI,
     CLAUDE_MODEL,
     CLAUDE_PERMISSION_MODE,
@@ -30,8 +35,15 @@ DISALLOWED_TOOLS = [
 ]
 
 
-def run(prompt: str, session_id: str | None = None) -> tuple[str, str]:
-    """Run claude CLI with the given prompt. Returns (result_text, new_session_id)."""
+def run(
+    prompt: str, session_id: str | None = None, restricted: bool = False
+) -> tuple[str, str]:
+    """Run claude CLI with the given prompt. Returns (result_text, new_session_id).
+
+    restricted=True is for untrusted (bot-triggered) prompts: dontAsk denies
+    every tool outside BOT_ALLOWED_TOOLS, and an empty strict MCP config keeps
+    the operator's MCP servers (user-OAuth Slack, Atlassian, ...) unloaded.
+    """
     cmd = [
         CLAUDE_CLI,
         "-p",
@@ -40,19 +52,33 @@ def run(prompt: str, session_id: str | None = None) -> tuple[str, str]:
         CLAUDE_MODEL,
         "--output-format",
         "json",
-        "--permission-mode",
-        CLAUDE_PERMISSION_MODE,
         "--disallowed-tools",
-        ",".join(DISALLOWED_TOOLS),
+        *DISALLOWED_TOOLS,
+        *(BOT_DISALLOWED_TOOLS if restricted else []),
     ]
+    if restricted:
+        # --allowed-tools only ADDS to allow rules from settings files, so the
+        # operator's settings (which allow plain "Bash") must not load: with a
+        # dedicated bot config dir its user settings are ours, otherwise load
+        # nothing but the workspace's local settings.
+        cmd += [
+            "--setting-sources", "user" if BOT_CLAUDE_CONFIG_DIR else "local",
+            "--permission-mode", "dontAsk",
+            "--allowed-tools", *BOT_ALLOWED_TOOLS,
+            "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+        ]
+    else:
+        cmd += ["--permission-mode", CLAUDE_PERMISSION_MODE]
     if session_id:
         cmd += ["--resume", session_id]
+    cwd = Path(BOT_WORKSPACE).expanduser() if restricted and BOT_WORKSPACE else AGENT_WORKSPACE
 
     log.info(
-        "spawning claude (cwd=%s, resume=%s, timeout=%s)",
-        AGENT_WORKSPACE,
+        "spawning claude (cwd=%s, resume=%s, timeout=%s, restricted=%s)",
+        cwd,
         session_id,
         CLAUDE_TIMEOUT,
+        restricted,
     )
     # CLAUDE_CONFIG_DIR must point at the dir holding valid OAuth creds for
     # the account this bridge runs as. It is injected by the service unit
@@ -60,10 +86,17 @@ def run(prompt: str, session_id: str | None = None) -> tuple[str, str]:
     # run via `systemctl --user` / launchd, never a manual nohup, or the CLI
     # will fall back to ~/.claude and may pick up a different account.
     env = os.environ.copy()
+    if restricted:
+        # Nothing an untrusted run is allowed to do needs these; keep them out
+        # of reach of any command that slips past the allowlist.
+        env.pop("SLACK_BOT_TOKEN", None)
+        env.pop("SLACK_APP_TOKEN", None)
+        if BOT_CLAUDE_CONFIG_DIR:
+            env["CLAUDE_CONFIG_DIR"] = str(Path(BOT_CLAUDE_CONFIG_DIR).expanduser())
 
     proc = subprocess.run(
         cmd,
-        cwd=str(AGENT_WORKSPACE),
+        cwd=str(cwd),
         capture_output=True,
         text=True,
         timeout=CLAUDE_TIMEOUT,

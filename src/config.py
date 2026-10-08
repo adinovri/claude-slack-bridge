@@ -73,3 +73,54 @@ CLAUDE_CONFIG_DIR = Path(
 ).expanduser()
 
 LOG_LEVEL = _env("LOG_LEVEL", "INFO")
+
+# --- bot triggers (e.g. a Slack Workflow Builder workflow) ---
+# Comma-separated bot IDs (B…) or bot member IDs (U…, resolved to B… at
+# startup) whose @-mentions may trigger a run. Empty = feature OFF and the
+# bridge behaves exactly as before. Bot-triggered runs are UNTRUSTED: their
+# text can carry input from anyone who can feed the workflow, so they run in a
+# restricted mode (dontAsk + the allowlist below, no MCP, no [alt]/[bg]).
+TRIGGER_BOT_IDS = frozenset(
+    s.strip() for s in _env("TRIGGER_BOT_IDS", "").split(",") if s.strip()
+)
+# Read-only tools for bot runs, one rule per entry (comma-separated in env).
+# Keep every rule an exact subcommand + trailing " *": a mid-command wildcard
+# like "gcloud * list *" also matches "gcloud secrets versions access ... list".
+BOT_ALLOWED_TOOLS = [
+    s.strip() for s in _env(
+        "BOT_ALLOWED_TOOLS",
+        "Bash(gcloud logging read *),"
+        "Bash(gcloud projects list *),"
+        "Bash(gcloud projects describe *),"
+        "Bash(gcloud projects get-iam-policy *),"
+        "Bash(gcloud compute instances list *),"
+        "Bash(gcloud compute instances describe *),"
+        "Bash(gcloud compute firewall-rules list *),"
+        "Bash(gcloud compute firewall-rules describe *),"
+        "Bash(gcloud compute addresses list *),"
+        "Bash(gcloud container clusters list *),"
+        "Bash(gcloud container clusters describe *),"
+        "Bash(gcloud storage buckets list *),"
+        "Bash(gcloud storage buckets describe *),"
+        "Bash(gcloud iam service-accounts list *),"
+        "Bash(gcloud iam service-accounts describe *),"
+        "Bash(gcloud sql instances list *)",
+    ).split(",") if s.strip()
+]
+# Always denied for bot runs, on top of dontAsk. Read/Grep/Glob would expose
+# local files (this repo's .env holds the Slack tokens); --log-http prints the
+# Authorization header.
+BOT_DISALLOWED_TOOLS = [
+    "Read", "Grep", "Glob", "Write", "Edit", "NotebookEdit",
+    "WebFetch", "WebSearch", "Bash(* --log-http*)",
+]
+# Separate Claude config dir + cwd for bot runs, so the operator's settings
+# (blanket "Bash" allow rules, hooks), memory and CLAUDE.md never apply to an
+# untrusted run. Empty = fall back to CLAUDE_CONFIG_DIR / AGENT_WORKSPACE and
+# load only "local" setting sources.
+BOT_CLAUDE_CONFIG_DIR = _env("BOT_CLAUDE_CONFIG_DIR", "")
+BOT_WORKSPACE = _env("BOT_WORKSPACE", "")
+# Channel whose recent history is injected as context for bot runs (e.g. the
+# alert channel). Empty = only the triggering thread is injected.
+BOT_CONTEXT_CHANNEL = _env("BOT_CONTEXT_CHANNEL", "")
+BOT_CONTEXT_LIMIT = int(_env("BOT_CONTEXT_LIMIT", "30"))
