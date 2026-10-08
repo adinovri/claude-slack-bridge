@@ -11,6 +11,10 @@ Three runners, selected by a prefix on your message: a one-shot `claude -p`
 (default), a live-updating tmux TUI (`[alt]`), and a detached background task
 that survives a bridge restart (`[bg]`).
 
+Optionally, an allowlisted **bot** (for example a Slack Workflow Builder
+workflow) can trigger read-only, sandboxed runs as well — see
+[Bot triggers](#bot-triggers-optional-untrusted).
+
 Connects over Slack **Socket Mode**, so it needs no public URL, no inbound
 firewall rule, and no reverse proxy.
 
@@ -27,7 +31,10 @@ Slack message (any channel/DM the bot is in)
   ├─> channel/group/mpim: bot @-mentioned  → app_mention event
   └─> DM (im)            : any message     → message event (channel_type=im)
         │
-        └─> sender == TRIGGER_USER_ID?   (the only authorization check)
+        ├─> posted by a bot in TRIGGER_BOT_IDS?   (optional, off by default)
+        │     └─> yes → _dispatch(untrusted)   → always [bg], restricted (see "Bot triggers")
+        │
+        └─> sender == TRIGGER_USER_ID?   (the only authorization check for humans)
               ├─> no  → ignore silently
               └─> yes → _dispatch()
                           │
@@ -110,6 +117,91 @@ Slack message (any channel/DM the bot is in)
 Because the subprocess is detached and posts its own result, a bridge restart
 mid-run does not interrupt or notify. The bg task keeps going and updates Slack
 when it finishes — exactly as if the bridge were still up.
+
+### Bot triggers (optional, untrusted)
+
+By default every bot-authored message is ignored. Setting `TRIGGER_BOT_IDS`
+lets specific bots — typically a Slack **Workflow Builder** workflow that posts
+a message @-mentioning this app — start a run. Leave it empty to keep the
+feature off; the bridge then behaves exactly as without it.
+
+Text from a bot is **untrusted**: a workflow can carry form input, alert
+payloads or anything else someone outside your control wrote. So a bot-
+triggered run is never a normal run:
+
+| | Operator (`TRIGGER_USER_ID`) | Bot (`TRIGGER_BOT_IDS`) |
+|---|---|---|
+| Runner | default / `[alt]` / `[bg]` by prefix | always `[bg]`; prefixes are ignored |
+| Prompt | the message | thread + recent `BOT_CONTEXT_CHANNEL` history, wrapped in `<untrusted_slack_data>` |
+| Permission mode | `CLAUDE_PERMISSION_MODE` | `dontAsk` |
+| Tools | everything | `Bash` only (`--tools Bash`, skills disabled, no MCP) |
+| Allowed commands | everything | `BOT_ALLOWED_TOOLS` (read-only `gcloud` by default) |
+| Settings loaded | all | `user` from `BOT_CLAUDE_CONFIG_DIR` only (`local` if unset) |
+| Config dir / cwd | `CLAUDE_CONFIG_DIR` / `AGENT_WORKSPACE` | `BOT_CLAUDE_CONFIG_DIR` / `BOT_WORKSPACE` |
+| Environment | bridge env minus Slack tokens | `env -i` + `HOME`, `PATH`, locale, `CLAUDE_CONFIG_DIR` |
+| Session resume | yes | never resumes an operator session (and vice versa) |
+
+Why a separate config dir: `--allowed-tools` only *adds* to the allow rules in
+settings files. If the operator's settings allow plain `Bash` (common for an
+agent workspace), passing an allowlist on the command line restricts nothing.
+A dedicated `BOT_CLAUDE_CONFIG_DIR` with its own, minimal `settings.json` (and
+no hooks) avoids that.
+
+**Finding the bot ID.** Either of:
+- In Slack, open the bot's profile from one of its messages → *Copy member ID*
+  (`U…`). Put that in `TRIGGER_BOT_IDS`; the bridge resolves it to the bot ID
+  (`B…`) at startup via `users.info`.
+- Let it mention the app once with the feature off. The bridge logs
+  `ignore app_mention from bot: bot_id=B… app_id=A… …`.
+
+**One-time setup** (example paths):
+
+```bash
+# 1. a dedicated config dir, logged in to the account bot runs should use
+mkdir -p ~/claude-bot-harness/workspace
+CLAUDE_CONFIG_DIR=~/claude-bot-harness claude      # then /login, /exit
+
+# 2. minimal settings: dontAsk + the same allow/deny lists as the bridge
+cat > ~/claude-bot-harness/settings.json <<'JSON'
+{
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "allow": ["Bash(gcloud logging read *)", "Bash(gcloud projects list *)"],
+    "deny":  ["Read", "Grep", "Glob", "Write", "Edit", "NotebookEdit",
+              "WebFetch", "WebSearch", "Bash(* --log-http*)"]
+  }
+}
+JSON
+
+# 3. mark the workspace trusted, or the [bg] TUI stops at the
+#    "trust this folder" dialog and the prompt never lands
+python3 - <<'PY'
+import json, os
+cfg = os.path.expanduser("~/claude-bot-harness/.claude.json")
+ws = os.path.expanduser("~/claude-bot-harness/workspace")
+d = json.load(open(cfg))
+d.setdefault("projects", {}).setdefault(ws, {})["hasTrustDialogAccepted"] = True
+json.dump(d, open(cfg, "w"), indent=2)
+PY
+```
+
+Then set `TRIGGER_BOT_IDS`, `BOT_CLAUDE_CONFIG_DIR`, `BOT_WORKSPACE` (and
+optionally `BOT_CONTEXT_CHANNEL`) and restart. The startup log confirms it:
+`bot triggers enabled (untrusted mode): ['B…']`. Invite the bot that posts the
+workflow messages and this app to the same channels.
+
+Caveats:
+- Commands in the allowlist run with **the host's** credentials (e.g. the
+  active `gcloud` account). Prefer a dedicated read-only service account.
+- Keep allowlist rules as an exact subcommand plus a trailing ` *`. A wildcard
+  in the middle (`gcloud * list *`) also matches e.g.
+  `gcloud secrets versions access … list`.
+- Claude Code auto-allows a few read-only commands (`ls`, `pwd`, `whoami`, …)
+  inside the working directory, even in `dontAsk`. Keep `BOT_WORKSPACE` free
+  of anything sensitive.
+- The prompt asks the model to summarize rather than paste raw logs, but what
+  ends up in the thread is ultimately model output — mind data you would not
+  want in that channel.
 
 ### Graceful shutdown
 
@@ -401,6 +493,10 @@ SLACK_BOT_TOKEN      required    xoxb-... (bot OAuth token). Also read by the
 SLACK_APP_TOKEN      required    xapp-... (socket mode app-level token)
 TRIGGER_USER_ID      required    the ONE Slack member ID allowed to trigger a run.
                                  No default — see SECURITY.md.
+TRIGGER_BOT_IDS      (empty)     comma-separated bot IDs (B…) or bot member IDs
+                                 (U…, resolved at startup) whose @-mentions start
+                                 a restricted [bg] run. Empty = feature off.
+                                 See "Bot triggers".
 
 # Claude
 CLAUDE_CLI           claude      path to claude binary
@@ -438,6 +534,18 @@ BG_REGISTRY          ~/.claude-slack-bridge/bg_registry.json
                                  shared registry file — bridge, csb-bg-claude,
                                  and csb-bg-watchdog MUST agree on this path.
                                  Bridge passes it through to the subprocess.
+
+# Bot triggers (only used when TRIGGER_BOT_IDS is set)
+BOT_CLAUDE_CONFIG_DIR (empty)    config dir for bot runs, passed to claude as
+                                 CLAUDE_CONFIG_DIR. Empty = reuse CLAUDE_CONFIG_DIR
+                                 and load only "local" settings.
+BOT_WORKSPACE        (empty)     cwd for bot runs. Empty = AGENT_WORKSPACE.
+BOT_ALLOWED_TOOLS    read-only gcloud rules
+                                 comma-separated permission rules, e.g.
+                                 "Bash(gcloud logging read *),Bash(gcloud projects list *)"
+BOT_CONTEXT_CHANNEL  (empty)     channel ID whose recent history is added to the
+                                 prompt (e.g. an alert channel). Empty = thread only.
+BOT_CONTEXT_LIMIT    30          how many messages of BOT_CONTEXT_CHANNEL to include
 
 # Optional — Telegram fallback for csb-bg / non-Slack csb-bg-claude callers.
 # Keep these OUT of .env; put them in ~/.config/claude-slack-bridge.env
