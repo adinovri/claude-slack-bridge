@@ -421,6 +421,67 @@ def reap_orphan_tmux() -> None:
         _tmux("kill-session", "-t", name)
 
 
+# A detached [bg] TUI that hits a permission dialog (edit outside cwd, a path
+# Claude Code treats as sensitive, "trust this folder", …) waits forever:
+# nobody is attached to answer it. Flag it once it has sat there this long.
+PROMPT_STALL_SECS = int(os.environ.get("CSB_PROMPT_STALL_SECS", "180"))
+_PROMPT_QUESTION = re.compile(r"Do you want to|trust this folder|Do you trust")
+_PROMPT_CHOICE = re.compile(r"❯\s*1\.\s*Yes")
+
+
+def _pending_prompt(tmux_name):
+    """Return the dialog's question line if the pane is waiting on one, else None."""
+    r = _tmux("capture-pane", "-p", "-t", tmux_name, "-S", "-60")
+    if r.returncode != 0:
+        return None
+    pane = r.stdout
+    if not _PROMPT_CHOICE.search(pane):
+        return None
+    for line in reversed(pane.splitlines()):
+        if _PROMPT_QUESTION.search(line):
+            return line.strip()[:200]
+    return None
+
+
+def _check_prompt_stall(entry):
+    """Track a pending permission dialog on the entry; notify once when stalled."""
+    question = _pending_prompt(entry["tmux_name"])
+    if question is None:
+        entry.pop("prompt_seen_at", None)
+        entry.pop("prompt_notified", None)
+        return
+    now = int(time.time())
+    seen = entry.setdefault("prompt_seen_at", now)
+    if entry.get("prompt_notified") or now - seen < PROMPT_STALL_SECS:
+        return
+    entry["prompt_notified"] = True
+    mins = (now - seen) // 60
+    tmux_name = entry["tmux_name"]
+    subprocess.run([
+        "logger", "-t", "csb-bg-watchdog",
+        f"{tmux_name} stuck on permission prompt for {mins}m: {question}",
+    ])
+    fix = f"approve: `tmux send-keys -t {tmux_name} 1 Enter` · inspect: `tmux attach -t {tmux_name}`"
+    notify = entry.get("notify", {"type": "telegram"})
+    if notify.get("type") != "slack" or os.environ.get("TELEGRAM_BOT_TOKEN"):
+        _notify_telegram(
+            f"⏸ *Stuck:* {entry['description']} — waiting on a permission prompt for {mins}m\n"
+            f"`{question}`\n{fix}"
+        )
+    if notify.get("type") == "slack":
+        bot_token = notify.get("bot_token") or os.environ.get("SLACK_BOT_TOKEN")
+        if bot_token:
+            # A new message (not chat.update) so the operator mention notifies.
+            operator = os.environ.get("TRIGGER_USER_ID")
+            who = f"<@{operator}> " if operator else ""
+            _slack_api("chat.postMessage", bot_token, {
+                "channel": notify["channel"],
+                "thread_ts": notify["thread_ts"],
+                "text": f"{who}:double_vertical_bar: `[bg]` paused on a permission prompt for {mins}m "
+                        f"(_{question}_) — {fix}",
+            })
+
+
 def check_entries():
     entries = _load_registry()
     if not entries:
@@ -442,6 +503,7 @@ def check_entries():
             _dispatch_fail(entry, last_text, reason="died")
             continue
 
+        _check_prompt_stall(entry)
         remaining.append(entry)
 
     _save_registry(remaining)
