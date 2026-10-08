@@ -203,6 +203,37 @@ Caveats:
   ends up in the thread is ultimately model output — mind data you would not
   want in that channel.
 
+#### Revoking a bot
+
+`TRIGGER_BOT_IDS` is resolved once at startup, so revoking means changing it
+and restarting:
+
+```bash
+# remove the bot from TRIGGER_BOT_IDS (or delete the variable to turn the
+# feature off entirely) wherever you set it — .env or a systemd override — then:
+systemctl --user daemon-reload                       # only if you edited a unit
+systemctl --user restart claude-slack-bridge.service
+```
+
+Verify: the startup log no longer prints `bot triggers enabled`, and the next
+mention from that bot logs `ignore app_mention from bot: bot_id=B…`.
+
+A restart does **not** stop bot tasks already running — `[bg]` tasks are
+detached on purpose. To stop them too:
+
+```bash
+tmux ls | grep csb-bg-                   # bot tasks are the registry entries whose
+                                         # jsonl_path is under BOT_CLAUDE_CONFIG_DIR
+tmux kill-session -t csb-bg-XXXXXXXX
+```
+
+Other levers that don't need the bridge at all:
+- **Claude credentials:** `CLAUDE_CONFIG_DIR=<BOT_CLAUDE_CONFIG_DIR> claude /logout`
+  (or delete its `.credentials.json`). Every bot run then fails to
+  authenticate, including retriggers.
+- **Slack:** remove the bot (or this app) from the channel, or disable the
+  workflow.
+
 ### Graceful shutdown
 
 On `SIGTERM`/`SIGINT`:
