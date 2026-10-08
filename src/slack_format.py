@@ -20,6 +20,13 @@ _LINK = re.compile(r"\[([^\]]+)\]\((\S+?)\)")
 _BULLET = re.compile(r"^(\s*)[-*+]\s+", re.MULTILINE)
 _HRULE = re.compile(r"^\s*([-*_])(\s*\1){2,}\s*$", re.MULTILINE)
 _BOLD_TOKEN = "\x01"
+# Slack auto-links digit runs it takes for phone numbers, so "(138.199.60.40,"
+# arrives as <tel:(138.199.60.40|...>. Code spans are never auto-linked.
+_IPV4 = re.compile(
+    r"(?<![A-Za-z0-9.])(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)"
+    r"(?:/\d{1,2})?(?![A-Za-z0-9/]|\.\d)"
+)
+_SLACK_LINK = re.compile(r"<[^<>\n]+>")
 
 
 def md_to_mrkdwn(text: str) -> str:
@@ -48,5 +55,8 @@ def md_to_mrkdwn(text: str) -> str:
     # Nested bold-inside-heading would double up; collapse it.
     text = re.sub(f"{_BOLD_TOKEN}{{2,}}", _BOLD_TOKEN, text)
     text = text.replace(_BOLD_TOKEN, "*")
+    # Last, after link conversion so IPs inside <url|label> are protected first.
+    text = _SLACK_LINK.sub(lambda m: _protect(m.group(0)), text)
+    text = _IPV4.sub(lambda m: _protect(f"`{m.group(0)}`"), text)
 
     return re.sub(r"\x00(\d+)\x00", lambda m: protected[int(m.group(1))], text)
