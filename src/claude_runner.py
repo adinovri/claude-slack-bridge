@@ -19,6 +19,11 @@ from .config import (
 
 log = logging.getLogger(__name__)
 
+# Environment passed to restricted (bot-triggered) runs. run.sh exports the
+# whole .env into the bridge, so an untrusted run gets only what claude and
+# gcloud need — never the bridge's own secrets.
+_BOT_ENV_KEYS = ("HOME", "PATH", "USER", "LOGNAME", "LANG", "LC_ALL", "TZ", "TMPDIR")
+
 # Slack write tools that act as the human operator (user-OAuth MCP servers,
 # as opposed to the bot token). The bridge already posts every reply via
 # SLACK_BOT_TOKEN, so the spawned agent must never call these — otherwise its
@@ -63,6 +68,9 @@ def run(
         # nothing but the workspace's local settings.
         cmd += [
             "--setting-sources", "user" if BOT_CLAUDE_CONFIG_DIR else "local",
+            # Only Bash exists at all: no Agent/Skill/Cron/RemoteTrigger/...
+            "--tools", "Bash",
+            "--disable-slash-commands",
             "--permission-mode", "dontAsk",
             "--allowed-tools", *BOT_ALLOWED_TOOLS,
             "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
@@ -87,10 +95,7 @@ def run(
     # will fall back to ~/.claude and may pick up a different account.
     env = os.environ.copy()
     if restricted:
-        # Nothing an untrusted run is allowed to do needs these; keep them out
-        # of reach of any command that slips past the allowlist.
-        env.pop("SLACK_BOT_TOKEN", None)
-        env.pop("SLACK_APP_TOKEN", None)
+        env = {k: v for k, v in env.items() if k in _BOT_ENV_KEYS or k == "CLAUDE_CONFIG_DIR"}
         if BOT_CLAUDE_CONFIG_DIR:
             env["CLAUDE_CONFIG_DIR"] = str(Path(BOT_CLAUDE_CONFIG_DIR).expanduser())
 
