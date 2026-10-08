@@ -17,6 +17,7 @@ Environment:
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -37,6 +38,13 @@ REGISTRY_FILE = Path(os.environ.get(
 ))
 
 SLACK_CHUNK_SIZE = 3800
+
+# A result that opens with a mention (user, user group, @here/@channel) is an
+# escalation. Slack does not notify on mentions added by chat.update, so the
+# mention is re-posted as a new message in the thread.
+_LEADING_MENTION = re.compile(
+    r"^\s*(<(?:!subteam\^[A-Z0-9]+|@[UW][A-Z0-9]+|!here|!channel)(?:\|[^>]*)?>)"
+)
 
 
 def _tmux(*args):
@@ -118,6 +126,13 @@ def _notify_slack(notify_cfg, result_text):
             "channel": channel,
             "thread_ts": thread_ts,
             "text": f"_(cont. {idx}/{len(chunks)})_\n{extra}",
+        })
+    mention = _LEADING_MENTION.match(result_text or "")
+    if mention:
+        _slack_api("chat.postMessage", bot_token, {
+            "channel": channel,
+            "thread_ts": thread_ts,
+            "text": f"{mention.group(1)} :rotating_light: escalated — see the analysis above.",
         })
 
 

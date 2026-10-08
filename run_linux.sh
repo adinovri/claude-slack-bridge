@@ -159,12 +159,6 @@ if [ -n "$(env_val TRIGGER_BOT_IDS)" ]; then
     grep -q '"oauthAccount"' "$BOT_CFG/.claude.json" 2>/dev/null \
       || die "$BOT_CFG is not logged in. run:  CLAUDE_CONFIG_DIR=$BOT_CFG claude  (then /login)"
     ok "bot config dir logged in: $BOT_CFG"
-    if [ -f "$BOT_CFG/settings.json" ]; then
-      ok "bot settings.json present"
-    else
-      warn "no $BOT_CFG/settings.json — the CLI flags still restrict bot runs, but a"
-      warn "settings.json with dontAsk + allow/deny is recommended (README → Bot triggers)."
-    fi
   fi
   if [ -n "$BOT_WS" ]; then
     mkdir -p "$BOT_WS"

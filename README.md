@@ -135,18 +135,37 @@ triggered run is never a normal run:
 | Task | the message | the bot's message (`<workflow_request>`), or a fixed `BOT_TASK_PROMPT` set by the operator |
 | Context | thread (via session resume) | thread + recent `BOT_CONTEXT_CHANNEL` history, wrapped in `<untrusted_slack_data>` |
 | Permission mode | `CLAUDE_PERMISSION_MODE` | `dontAsk` |
-| Tools | everything | `Bash` only (`--tools Bash`, skills disabled, no MCP) |
+| Tools | everything | `Bash` only (skills disabled, no MCP); plus `Read`/`Write`/`Edit` when `BOT_MEMORY` is on |
 | Allowed commands | everything | `BOT_ALLOWED_TOOLS` (read-only `gcloud` by default) |
-| Settings loaded | all | `user` from `BOT_CLAUDE_CONFIG_DIR` only (`local` if unset) |
+| File access | everything | `--restricted`: only `BOT_WORKSPACE` and, with `BOT_MEMORY`, the bot memory dir |
+| Settings loaded | all | none (`--restricted` ignores user/project/local settings) |
 | Config dir / cwd | `CLAUDE_CONFIG_DIR` / `AGENT_WORKSPACE` | `BOT_CLAUDE_CONFIG_DIR` / `BOT_WORKSPACE` |
 | Environment | bridge env minus Slack tokens | `env -i` + `HOME`, `PATH`, locale, `CLAUDE_CONFIG_DIR` |
 | Session resume | yes | never resumes an operator session (and vice versa) |
+| Memory | operator's | optional, separate: `BOT_MEMORY` (see below) |
+| Escalation | — | optional `BOT_ESCALATION_MENTION` on likely real attacks |
 
-Why a separate config dir: `--allowed-tools` only *adds* to the allow rules in
+Why `--restricted`: `--allowed-tools` only *adds* to the allow rules in
 settings files. If the operator's settings allow plain `Bash` (common for an
 agent workspace), passing an allowlist on the command line restricts nothing.
-A dedicated `BOT_CLAUDE_CONFIG_DIR` with its own, minimal `settings.json` (and
-no hooks) avoids that.
+`--restricted` ignores those settings and also confines `Read`/`Write`/`Edit`
+to the working directory plus `--add-dir`. A dedicated `BOT_CLAUDE_CONFIG_DIR`
+still keeps the bot's login, transcripts and memory apart from yours.
+
+**Memory (`BOT_MEMORY=1`).** The bot keeps notes of log-verified patterns
+(principal, method, address, resource → verdict, evidence, thread link) in
+`<BOT_CLAUDE_CONFIG_DIR>/projects/<workspace>/memory/MEMORY.md`. The bridge
+injects that file into each prompt; a matching event is answered with a
+reference to the earlier thread plus one confirming query, and anything that
+differs is analyzed in full. The file is written from untrusted input, so an
+attacker can try to plant "this is benign" notes — review it now and then,
+and delete lines you don't trust.
+
+**Escalation (`BOT_ESCALATION_MENTION`).** Set it to a mention such as
+`<!subteam^S0123ABCD>` (a user group) or `<@U0123ABCD>`. When the bot judges an
+event a likely real attack it puts the mention on its first line, and the
+`[bg]` watchdog posts it again as a **new** message — Slack doesn't notify on
+mentions added by editing a message.
 
 **Finding the bot ID.** Either of:
 - In Slack, open the bot's profile from one of its messages → *Copy member ID*
@@ -162,19 +181,7 @@ no hooks) avoids that.
 mkdir -p ~/claude-bot-harness/workspace
 CLAUDE_CONFIG_DIR=~/claude-bot-harness claude      # then /login, /exit
 
-# 2. minimal settings: dontAsk + the same allow/deny lists as the bridge
-cat > ~/claude-bot-harness/settings.json <<'JSON'
-{
-  "permissions": {
-    "defaultMode": "dontAsk",
-    "allow": ["Bash(gcloud logging read *)", "Bash(gcloud projects list *)"],
-    "deny":  ["Read", "Grep", "Glob", "Write", "Edit", "NotebookEdit",
-              "WebFetch", "WebSearch", "Bash(* --log-http*)"]
-  }
-}
-JSON
-
-# 3. mark the workspace trusted, or the [bg] TUI stops at the
+# 2. mark the workspace trusted, or the [bg] TUI stops at the
 #    "trust this folder" dialog and the prompt never lands
 python3 - <<'PY'
 import json, os
@@ -187,7 +194,8 @@ PY
 ```
 
 Then set `TRIGGER_BOT_IDS`, `BOT_CLAUDE_CONFIG_DIR`, `BOT_WORKSPACE` (and
-optionally `BOT_CONTEXT_CHANNEL`) and restart. The startup log confirms it:
+optionally `BOT_CONTEXT_CHANNEL`, `BOT_TASK_PROMPT`, `BOT_MEMORY`,
+`BOT_ESCALATION_MENTION`) and restart. The startup log confirms it:
 `bot triggers enabled (untrusted mode): ['B…']`. Invite the bot that posts the
 workflow messages and this app to the same channels.
 
@@ -569,8 +577,8 @@ BG_REGISTRY          ~/.claude-slack-bridge/bg_registry.json
 
 # Bot triggers (only used when TRIGGER_BOT_IDS is set)
 BOT_CLAUDE_CONFIG_DIR (empty)    config dir for bot runs, passed to claude as
-                                 CLAUDE_CONFIG_DIR. Empty = reuse CLAUDE_CONFIG_DIR
-                                 and load only "local" settings.
+                                 CLAUDE_CONFIG_DIR (login, transcripts, memory).
+                                 Empty = reuse CLAUDE_CONFIG_DIR.
 BOT_WORKSPACE        (empty)     cwd for bot runs. Empty = AGENT_WORKSPACE.
 BOT_ALLOWED_TOOLS    read-only gcloud rules
                                  comma-separated permission rules, e.g.
@@ -582,6 +590,11 @@ BOT_TASK_PROMPT      (empty)     fixed task for bot runs, e.g. "Analyze the aler
                                  this thread: real or expected, severity, evidence,
                                  next step." Empty = the bot's message is the task.
                                  The bot's message can narrow it, never replace it.
+BOT_MEMORY           (off)       1 = keep notes of verified patterns and inject them
+                                 into each prompt. Needs BOT_CLAUDE_CONFIG_DIR.
+BOT_ESCALATION_MENTION (empty)   mention put on the first line for a likely real
+                                 attack, e.g. "<!subteam^S0123ABCD>"; re-posted as
+                                 a new message so it notifies. Empty = never.
 
 # Optional — Telegram fallback for csb-bg / non-Slack csb-bg-claude callers.
 # Keep these OUT of .env; put them in ~/.config/claude-slack-bridge.env

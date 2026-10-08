@@ -114,6 +114,17 @@ BOT_DISALLOWED_TOOLS = [
     "Read", "Grep", "Glob", "Write", "Edit", "NotebookEdit",
     "WebFetch", "WebSearch", "Bash(* --log-http*)",
 ]
+# Persistent memory for bot runs (needs BOT_CLAUDE_CONFIG_DIR). The bot gets
+# Read/Write/Edit confined (by --restricted) to its workspace + memory dir, and
+# its MEMORY.md is injected into each prompt so verified patterns can be
+# referenced instead of re-analyzed. Memory is written from untrusted input:
+# expect poisoning attempts and review it now and then.
+BOT_MEMORY = _env("BOT_MEMORY", "").lower() in ("1", "true", "yes", "on")
+# Mention (e.g. "<!subteam^S0123ABCD>" or "<@U0123ABCD>") the bot puts on the
+# first line of its reply when it judges an event a likely real attack. The
+# [bg] watchdog then posts it as a NEW message, since Slack does not notify on
+# mentions added by an edit. Empty = never escalate.
+BOT_ESCALATION_MENTION = _env("BOT_ESCALATION_MENTION", "")
 # Separate Claude config dir + cwd for bot runs, so the operator's settings
 # (blanket "Bash" allow rules, hooks), memory and CLAUDE.md never apply to an
 # untrusted run. Empty = fall back to CLAUDE_CONFIG_DIR / AGENT_WORKSPACE and

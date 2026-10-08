@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from .config import (
     BOT_ALLOWED_TOOLS,
     BOT_CLAUDE_CONFIG_DIR,
     BOT_DISALLOWED_TOOLS,
+    BOT_MEMORY,
     BOT_WORKSPACE,
     CLAUDE_CLI,
     CLAUDE_MODEL,
@@ -40,24 +42,47 @@ DISALLOWED_TOOLS = [
 ]
 
 
+def bot_memory_dir() -> Path | None:
+    """Memory dir for bot runs, or None when memory is off. Lives in the bot
+    config dir, keyed like Claude Code's own project dirs (real cwd path with
+    every non-alphanumeric char replaced by "-")."""
+    if not (BOT_MEMORY and BOT_CLAUDE_CONFIG_DIR):
+        return None
+    cwd = os.path.realpath(restricted_cwd())
+    mangled = re.sub(r"[^a-zA-Z0-9]", "-", cwd)
+    return Path(BOT_CLAUDE_CONFIG_DIR).expanduser() / "projects" / mangled / "memory"
+
+
 def restricted_args() -> list[str]:
     """CLI flags for an untrusted (bot-triggered) run. Shared by the default
     runner and the [bg] runner (passed to csb-bg-claude) so both enforce the
     same limits.
 
-    --allowed-tools only ADDS to allow rules from settings files, and the
-    operator's settings allow plain "Bash", so those must not load: with a
-    dedicated bot config dir its user settings are ours, otherwise load nothing
-    but the workspace's local settings.
+    --restricted ignores user/project/local settings (--allowed-tools only ADDS
+    to their allow rules, and the operator's settings allow plain "Bash"),
+    drops code-running tools not named in --tools, and confines file tools to
+    the cwd plus --add-dir — here only the bot memory dir, if enabled.
     """
+    memory = bot_memory_dir()
+    tools = "Bash,Read,Write,Edit" if memory else "Bash"
+    denied = list(BOT_DISALLOWED_TOOLS)
+    allowed = list(BOT_ALLOWED_TOOLS)
+    extra: list[str] = []
+    if memory:
+        memory.mkdir(parents=True, exist_ok=True)
+        # Deny beats allow, so the file tools must leave the denylist; the
+        # sandbox from --restricted is what keeps them inside these dirs.
+        denied = [t for t in denied if t not in ("Read", "Write", "Edit")]
+        allowed.append(f"Edit(/{memory}/**)")  # "//abs/path"; covers Write too
+        extra = ["--add-dir", str(memory)]
     return [
-        "--setting-sources", "user" if BOT_CLAUDE_CONFIG_DIR else "local",
-        # Only Bash exists at all: no Agent/Skill/Cron/RemoteTrigger/...
-        "--tools", "Bash",
+        "--restricted",
+        "--tools", tools,
         "--disable-slash-commands",
         "--permission-mode", "dontAsk",
-        "--allowed-tools", *BOT_ALLOWED_TOOLS,
-        "--disallowed-tools", *DISALLOWED_TOOLS, *BOT_DISALLOWED_TOOLS,
+        *extra,
+        "--allowed-tools", *allowed,
+        "--disallowed-tools", *DISALLOWED_TOOLS, *denied,
         "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
     ]
 
