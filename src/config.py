@@ -122,5 +122,9 @@ BOT_CLAUDE_CONFIG_DIR = _env("BOT_CLAUDE_CONFIG_DIR", "")
 BOT_WORKSPACE = _env("BOT_WORKSPACE", "")
 # Channel whose recent history is injected as context for bot runs (e.g. the
 # alert channel). Empty = only the triggering thread is injected.
+# Optional fixed task for bot runs, set by the operator (e.g. "Analyze the
+# security alert in this thread: real attack or expected activity, severity,
+# evidence, recommended action."). Empty = the bot's own message is the task.
+BOT_TASK_PROMPT = _env("BOT_TASK_PROMPT", "")
 BOT_CONTEXT_CHANNEL = _env("BOT_CONTEXT_CHANNEL", "")
 BOT_CONTEXT_LIMIT = int(_env("BOT_CONTEXT_LIMIT", "30"))

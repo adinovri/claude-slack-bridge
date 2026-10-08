@@ -132,7 +132,8 @@ triggered run is never a normal run:
 | | Operator (`TRIGGER_USER_ID`) | Bot (`TRIGGER_BOT_IDS`) |
 |---|---|---|
 | Runner | default / `[alt]` / `[bg]` by prefix | always `[bg]`; prefixes are ignored |
-| Prompt | the message | thread + recent `BOT_CONTEXT_CHANNEL` history, wrapped in `<untrusted_slack_data>` |
+| Task | the message | the bot's message (`<workflow_request>`), or a fixed `BOT_TASK_PROMPT` set by the operator |
+| Context | thread (via session resume) | thread + recent `BOT_CONTEXT_CHANNEL` history, wrapped in `<untrusted_slack_data>` |
 | Permission mode | `CLAUDE_PERMISSION_MODE` | `dontAsk` |
 | Tools | everything | `Bash` only (`--tools Bash`, skills disabled, no MCP) |
 | Allowed commands | everything | `BOT_ALLOWED_TOOLS` (read-only `gcloud` by default) |
@@ -577,6 +578,10 @@ BOT_ALLOWED_TOOLS    read-only gcloud rules
 BOT_CONTEXT_CHANNEL  (empty)     channel ID whose recent history is added to the
                                  prompt (e.g. an alert channel). Empty = thread only.
 BOT_CONTEXT_LIMIT    30          how many messages of BOT_CONTEXT_CHANNEL to include
+BOT_TASK_PROMPT      (empty)     fixed task for bot runs, e.g. "Analyze the alert in
+                                 this thread: real or expected, severity, evidence,
+                                 next step." Empty = the bot's message is the task.
+                                 The bot's message can narrow it, never replace it.
 
 # Optional — Telegram fallback for csb-bg / non-Slack csb-bg-claude callers.
 # Keep these OUT of .env; put them in ~/.config/claude-slack-bridge.env
