@@ -40,6 +40,40 @@ DISALLOWED_TOOLS = [
 ]
 
 
+def restricted_args() -> list[str]:
+    """CLI flags for an untrusted (bot-triggered) run. Shared by the default
+    runner and the [bg] runner (passed to csb-bg-claude) so both enforce the
+    same limits.
+
+    --allowed-tools only ADDS to allow rules from settings files, and the
+    operator's settings allow plain "Bash", so those must not load: with a
+    dedicated bot config dir its user settings are ours, otherwise load nothing
+    but the workspace's local settings.
+    """
+    return [
+        "--setting-sources", "user" if BOT_CLAUDE_CONFIG_DIR else "local",
+        # Only Bash exists at all: no Agent/Skill/Cron/RemoteTrigger/...
+        "--tools", "Bash",
+        "--disable-slash-commands",
+        "--permission-mode", "dontAsk",
+        "--allowed-tools", *BOT_ALLOWED_TOOLS,
+        "--disallowed-tools", *DISALLOWED_TOOLS, *BOT_DISALLOWED_TOOLS,
+        "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+    ]
+
+
+def restricted_env(base: dict[str, str]) -> dict[str, str]:
+    """Minimal environment for an untrusted run (see _BOT_ENV_KEYS)."""
+    env = {k: v for k, v in base.items() if k in _BOT_ENV_KEYS or k == "CLAUDE_CONFIG_DIR"}
+    if BOT_CLAUDE_CONFIG_DIR:
+        env["CLAUDE_CONFIG_DIR"] = str(Path(BOT_CLAUDE_CONFIG_DIR).expanduser())
+    return env
+
+
+def restricted_cwd() -> Path:
+    return Path(BOT_WORKSPACE).expanduser() if BOT_WORKSPACE else AGENT_WORKSPACE
+
+
 def run(
     prompt: str, session_id: str | None = None, restricted: bool = False
 ) -> tuple[str, str]:
@@ -57,29 +91,17 @@ def run(
         CLAUDE_MODEL,
         "--output-format",
         "json",
-        "--disallowed-tools",
-        *DISALLOWED_TOOLS,
-        *(BOT_DISALLOWED_TOOLS if restricted else []),
     ]
     if restricted:
-        # --allowed-tools only ADDS to allow rules from settings files, so the
-        # operator's settings (which allow plain "Bash") must not load: with a
-        # dedicated bot config dir its user settings are ours, otherwise load
-        # nothing but the workspace's local settings.
-        cmd += [
-            "--setting-sources", "user" if BOT_CLAUDE_CONFIG_DIR else "local",
-            # Only Bash exists at all: no Agent/Skill/Cron/RemoteTrigger/...
-            "--tools", "Bash",
-            "--disable-slash-commands",
-            "--permission-mode", "dontAsk",
-            "--allowed-tools", *BOT_ALLOWED_TOOLS,
-            "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-        ]
+        cmd += restricted_args()
     else:
-        cmd += ["--permission-mode", CLAUDE_PERMISSION_MODE]
+        cmd += [
+            "--disallowed-tools", *DISALLOWED_TOOLS,
+            "--permission-mode", CLAUDE_PERMISSION_MODE,
+        ]
     if session_id:
         cmd += ["--resume", session_id]
-    cwd = Path(BOT_WORKSPACE).expanduser() if restricted and BOT_WORKSPACE else AGENT_WORKSPACE
+    cwd = restricted_cwd() if restricted else AGENT_WORKSPACE
 
     log.info(
         "spawning claude (cwd=%s, resume=%s, timeout=%s, restricted=%s)",
@@ -93,11 +115,7 @@ def run(
     # (Environment=CLAUDE_CONFIG_DIR=...), which is the canonical launch path —
     # run via `systemctl --user` / launchd, never a manual nohup, or the CLI
     # will fall back to ~/.claude and may pick up a different account.
-    env = os.environ.copy()
-    if restricted:
-        env = {k: v for k, v in env.items() if k in _BOT_ENV_KEYS or k == "CLAUDE_CONFIG_DIR"}
-        if BOT_CLAUDE_CONFIG_DIR:
-            env["CLAUDE_CONFIG_DIR"] = str(Path(BOT_CLAUDE_CONFIG_DIR).expanduser())
+    env = restricted_env(os.environ) if restricted else os.environ.copy()
 
     proc = subprocess.run(
         cmd,

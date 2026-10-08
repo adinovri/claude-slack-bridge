@@ -29,6 +29,11 @@ Environment:
 
 --resume-session: Resume an existing Claude session by its UUID (uses --resume flag).
   When set, the existing session's transcript is continued instead of a fresh one.
+
+--claude-args-json: JSON list of claude CLI flags for a restricted (untrusted,
+  bot-triggered) task. They REPLACE --permission-mode/--disallowed-tools above,
+  and the TUI is started under `env -i` with a minimal environment so nothing
+  from the tmux server's global environment leaks in.
 """
 import argparse
 import json
@@ -236,6 +241,11 @@ def main():
         "--resume-session", default=None, metavar="SESSION_ID",
         help="Resume an existing Claude session by UUID (uses --resume instead of --session-id)",
     )
+    parser.add_argument(
+        "--claude-args-json", default=None, metavar="JSON",
+        help="JSON list of claude flags for a restricted run (replaces the "
+             "permission/denylist flags; TUI env is reset to a minimal set)",
+    )
     args = parser.parse_args()
 
     description = args.description
@@ -260,14 +270,30 @@ def main():
 
     jsonl = _transcript_path(claude_uuid)
 
+    if args.claude_args_json:
+        restricted_args = json.loads(args.claude_args_json)
+        # `env -i`: the pane would otherwise inherit the tmux server's global
+        # environment, which is whatever the first tmux client happened to have.
+        env_prefix = [
+            "env", "-i",
+            f"HOME={os.environ.get('HOME', str(Path.home()))}",
+            f"PATH={os.environ.get('PATH', '/usr/bin:/bin')}",
+            f"LANG={os.environ.get('LANG', 'C.UTF-8')}",
+            "TERM=tmux-256color",
+            f"CLAUDE_CONFIG_DIR={CLAUDE_CONFIG}",
+        ]
+        claude_flags = restricted_args
+    else:
+        env_prefix = ["env", f"CLAUDE_CONFIG_DIR={CLAUDE_CONFIG}"]
+        claude_flags = ["--permission-mode", CLAUDE_PERM, "--disallowed-tools", DISALLOWED]
+
     r = _tmux(
         "new-session", "-d", "-s", tmux_name,
         "-x", "220", "-y", "50",
         "-c", str(WORKSPACE),
-        "env", f"CLAUDE_CONFIG_DIR={CLAUDE_CONFIG}",
+        *env_prefix,
         CLAUDE_CLI, "--model", CLAUDE_MODEL,
-        "--permission-mode", CLAUDE_PERM,
-        "--disallowed-tools", DISALLOWED,
+        *claude_flags,
         *session_flag,
     )
     if r.returncode != 0:

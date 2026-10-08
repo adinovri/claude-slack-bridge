@@ -33,7 +33,9 @@ from .config import (
     BG_REGISTRY,
     BOT_CONTEXT_CHANNEL,
     BOT_CONTEXT_LIMIT,
+    CLAUDE_CLI,
     CLAUDE_CONFIG_DIR,
+    CLAUDE_MODEL,
     LOG_LEVEL,
     SLACK_APP_TOKEN,
     SLACK_BOT_TOKEN,
@@ -268,9 +270,10 @@ def _dispatch(
 
     is_alt, is_bg, clean = _detect_markers(raw)
     if untrusted:
-        # Bot triggers never get the tmux runners: [alt]/[bg] run with full
-        # operator permissions.
-        is_alt = is_bg = False
+        # Bot triggers always go through [bg] (tmux + watchdog), launched with
+        # claude_runner.restricted_args(). Never [alt]: it attaches to a live
+        # operator session.
+        is_alt, is_bg = False, True
         prompt = _build_untrusted_prompt(
             event, clean, _fetch_bot_context(client, channel, thread_ts)
         )
@@ -336,25 +339,38 @@ def _dispatch(
         # in its subtree needs them (the MCP servers carry their own auth).
         # Without this they stay readable in /proc/<pid>/environ for the whole
         # life of the task.
-        env = {
-            k: v for k, v in os.environ.items()
-            if k not in ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN")
-        }
-        env.update({
-            "CLAUDE_CONFIG_DIR": str(CLAUDE_CONFIG_DIR),
-            # Registry path MUST be consistent bridge↔worker↔watchdog.
-            "BG_REGISTRY":       str(BG_REGISTRY),
-            # csb-bg-claude requires this — pass it through so operators only
-            # have to configure AGENT_WORKSPACE in the bridge's .env.
-            "CLAUDE_WORKSPACE":  str(AGENT_WORKSPACE),
-        })
+        if untrusted:
+            # Minimal env + the bot's own config dir and workspace; the tmux TUI
+            # gets the restricted flags via --claude-args-json.
+            env = claude_runner.restricted_env(os.environ)
+            env.update({
+                "CLAUDE_CLI":       CLAUDE_CLI,
+                "CLAUDE_MODEL":     CLAUDE_MODEL,
+                "BG_REGISTRY":      str(BG_REGISTRY),
+                "CLAUDE_WORKSPACE": str(claude_runner.restricted_cwd()),
+            })
+            extra = ["--claude-args-json", json.dumps(claude_runner.restricted_args())]
+        else:
+            env = {
+                k: v for k, v in os.environ.items()
+                if k not in ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN")
+            }
+            env.update({
+                "CLAUDE_CONFIG_DIR": str(CLAUDE_CONFIG_DIR),
+                # Registry path MUST be consistent bridge↔worker↔watchdog.
+                "BG_REGISTRY":       str(BG_REGISTRY),
+                # csb-bg-claude requires this — pass it through so operators only
+                # have to configure AGENT_WORKSPACE in the bridge's .env.
+                "CLAUDE_WORKSPACE":  str(AGENT_WORKSPACE),
+            })
+            extra = []
         subprocess.Popen(
             ["python3", CSB_BG_CLAUDE, f"slack:{thread_ts[:12]}", prompt,
-             "--notify-json", json.dumps(notify_cfg)],
+             "--notify-json", json.dumps(notify_cfg), *extra],
             env=env,
         )
-        log.info("bg task launched via csb-bg-claude: thread_ts=%s siblings=%d",
-                 thread_ts, len(siblings))
+        log.info("bg task launched via csb-bg-claude: thread_ts=%s siblings=%d restricted=%s",
+                 thread_ts, len(siblings), untrusted)
         return  # watchdog handles ack update + cleanup
 
     try:
