@@ -95,8 +95,8 @@ _STATUSBAR_RE   = re.compile(r"\d[\d.]*K?/\d[\d.]*K")
 _MENU_CURSOR_RE = re.compile(r"^\s*❯\s*\d+\.", re.M)
 
 
-def _tmux(*args):
-    return subprocess.run(["tmux", *args], capture_output=True, text=True)
+def _tmux(*args, input=None):
+    return subprocess.run(["tmux", *args], capture_output=True, text=True, input=input)
 
 
 def _session_alive(name):
@@ -167,8 +167,18 @@ def _send_prompt(tmux_name, prompt):
             time.sleep(0.2)
             _tmux("send-keys", "-t", tmux_name, "C-u")
             time.sleep(0.2)
-        _tmux("set-buffer", "--", prompt)
-        _tmux("paste-buffer", "-p", "-t", tmux_name)
+        # load-buffer from stdin into a named buffer, deleted on paste (-d).
+        # `set-buffer -- <prompt>` fails with "command too long" above ~16 KB,
+        # and a bare paste-buffer then pastes whatever the server's top buffer
+        # is — which on a shared tmux server can be another agent's prompt.
+        buf = f"{tmux_name}-prompt"
+        loaded = _tmux("load-buffer", "-b", buf, "-", input=prompt)
+        if loaded.returncode != 0:
+            print(f"[csb-bg-claude] load-buffer failed: {loaded.stderr.strip()} "
+                  f"— tearing down {tmux_name}", file=sys.stderr)
+            _tmux("kill-session", "-t", tmux_name)
+            sys.exit(2)
+        _tmux("paste-buffer", "-d", "-p", "-b", buf, "-t", tmux_name)
         rendered = False
         deadline = time.monotonic() + 6
         while time.monotonic() < deadline:

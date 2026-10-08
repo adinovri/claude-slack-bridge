@@ -45,11 +45,12 @@ _SESSIONS: dict[str, float] = {}
 # internal helpers
 # ---------------------------------------------------------------------------
 
-def _tmux(*args: str) -> subprocess.CompletedProcess:
+def _tmux(*args: str, input: str | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["tmux", "-L", ALT_TMUX_SOCKET, *args],
         capture_output=True,
         text=True,
+        input=input,
     )
 
 
@@ -300,8 +301,14 @@ class TmuxSession:
             if paste_try > 0:
                 self._clear_input()  # drop any stale half-paste before retrying
             # multi-line via bracketed paste — avoids REPL submitting per line
-            _tmux("set-buffer", "--", prompt)
-            _tmux("paste-buffer", "-p", "-t", self.name)
+            # load-buffer from stdin into a named buffer, deleted on paste:
+            # set-buffer fails above ~16 KB and a bare paste-buffer would then
+            # paste a stale buffer (see csb-bg-claude).
+            buf = f"{self.name}-prompt"
+            loaded = _tmux("load-buffer", "-b", buf, "-", input=prompt)
+            if loaded.returncode != 0:
+                raise RuntimeError(f"tmux load-buffer failed: {loaded.stderr.strip()}")
+            _tmux("paste-buffer", "-d", "-p", "-b", buf, "-t", self.name)
             deadline = time.monotonic() + 4
             while time.monotonic() < deadline:
                 time.sleep(0.2)
