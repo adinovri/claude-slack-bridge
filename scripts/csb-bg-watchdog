@@ -15,6 +15,7 @@ Environment:
   BG_REGISTRY       shared registry file path (default: ~/.claude-slack-bridge/bg_registry.json)
   CSB_NOTIFY_BIN   path to csb-notify (default: sibling of this script)
 """
+import fcntl
 import json
 import os
 import re
@@ -23,6 +24,7 @@ import sys
 import time
 import urllib.request
 
+from contextlib import contextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -185,6 +187,18 @@ def _dispatch_fail(entry, partial_text, reason):
         _notify_telegram(f"❌ *Failed:* {description} (session died)\n```\n{partial}\n```")
 
 
+@contextmanager
+def _registry_lock():
+    """Serialize registry read-modify-write between csb-bg-claude launches and
+    the watchdog. Without it, two launches in the same instant (or a launch
+    during a watchdog pass) overwrite each other's entry, and the lost task is
+    never notified."""
+    REGISTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(f"{REGISTRY_FILE}.lock", "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        yield
+
+
 def _load_registry():
     try:
         return json.loads(REGISTRY_FILE.read_text())
@@ -326,7 +340,8 @@ def _summarize(text, max_chars=800):
 # Pairs of (match_prefix, skip_prefix). A tmux session whose name starts with
 # match_prefix but NOT with skip_prefix is an orphan candidate: it was spawned
 # by a bridge run that has since died, and nothing in the registry owns it.
-# The skip_prefix is the "bg-" variant that IS registry-tracked — never reaped.
+# The skip_prefix is the "bg-" variant, normally registry-tracked; untracked
+# ones are reaped separately (BG_UNTRACKED_IDLE_SECS).
 # Sessions with an underscore prefix (csb_*, owned by alt_runner.py) are out of
 # scope; they have their own reap_idle().
 #
@@ -347,6 +362,11 @@ def _load_orphan_patterns() -> list[tuple[str, str]]:
 BRIDGE_PATTERNS = _load_orphan_patterns()
 ORPHAN_IDLE_THRESHOLD_SECS = 1800   # 30 minutes
 ORPHAN_CPU_ACTIVE_THRESHOLD = 10.0  # percent — skip if process is still busy
+# [bg] sessions (csb-bg-*) the registry no longer tracks: the task finished but
+# its entry is gone, so nothing will ever notify or kill it. A launching
+# session is active and registers within a couple of minutes.
+BG_UNTRACKED_PREFIX = "csb-bg-"
+BG_UNTRACKED_IDLE_SECS = int(os.environ.get("CSB_BG_UNTRACKED_IDLE_SECS", "600"))
 
 
 def _is_orphan_candidate(name: str) -> bool:
@@ -396,8 +416,10 @@ def _pane_cpu(session_name: str) -> float:
 
 
 def reap_orphan_tmux() -> None:
-    """Kill bridge-spawned sessions not in registry and idle > threshold."""
-    registered = {e["tmux_name"] for e in _load_registry()}
+    """Kill bridge-spawned sessions not in registry and idle > threshold,
+    including finished [bg] sessions whose registry entry is gone."""
+    with _registry_lock():
+        registered = {e["tmux_name"] for e in _load_registry()}
 
     r = _tmux("list-sessions", "-F", "#{session_name}")
     if r.returncode != 0:
@@ -405,13 +427,17 @@ def reap_orphan_tmux() -> None:
 
     for line in r.stdout.splitlines():
         name = line.strip()
-        if not _is_orphan_candidate(name):
-            continue
         if name in registered:
+            continue
+        if name.startswith(BG_UNTRACKED_PREFIX):
+            threshold = BG_UNTRACKED_IDLE_SECS
+        elif _is_orphan_candidate(name):
+            threshold = ORPHAN_IDLE_THRESHOLD_SECS
+        else:
             continue
 
         idle = _session_idle_secs(name)
-        if idle is None or idle < ORPHAN_IDLE_THRESHOLD_SECS:
+        if idle is None or idle < threshold:
             continue
 
         cpu = _pane_cpu(name)
@@ -518,5 +544,6 @@ def check_entries():
 
 
 if __name__ == "__main__":
-    check_entries()
+    with _registry_lock():
+        check_entries()
     reap_orphan_tmux()

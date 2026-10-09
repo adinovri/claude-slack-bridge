@@ -36,6 +36,7 @@ Environment:
   from the tmux server's global environment leaks in.
 """
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -43,6 +44,7 @@ import subprocess
 import sys
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -221,6 +223,18 @@ def _await_transcript_growth(tmux_name, jsonl, tail_offset, timeout=45, resends=
     return False
 
 
+@contextmanager
+def _registry_lock():
+    """Serialize registry read-modify-write between csb-bg-claude launches and
+    the watchdog. Without it, two launches in the same instant (or a launch
+    during a watchdog pass) overwrite each other's entry, and the lost task is
+    never notified."""
+    REGISTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(f"{REGISTRY_FILE}.lock", "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        yield
+
+
 def _load_registry():
     try:
         return json.loads(REGISTRY_FILE.read_text())
@@ -334,9 +348,10 @@ def main():
         "slack_thread_ts": notify.get("thread_ts"),
         "notify":         notify,
     }
-    entries = _load_registry()
-    entries.append(entry)
-    _save_registry(entries)
+    with _registry_lock():
+        entries = _load_registry()
+        entries.append(entry)
+        _save_registry(entries)
 
     print(f"Background Claude launched [{tmux_name}] — {description}")
 
