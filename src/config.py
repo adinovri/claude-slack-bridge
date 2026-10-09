@@ -122,8 +122,8 @@ BOT_DISALLOWED_TOOLS = [
 BOT_MEMORY = _env("BOT_MEMORY", "").lower() in ("1", "true", "yes", "on")
 # Mention (e.g. "<!subteam^S0123ABCD>" or "<@U0123ABCD>") the bot puts on the
 # first line of its reply when it judges an event a likely real attack. The
-# [bg] watchdog then posts it as a NEW message, since Slack does not notify on
-# mentions added by an edit. Empty = never escalate.
+# [bg] watchdog moves it out of the analysis into a NEW message, since Slack
+# does not notify on mentions added by an edit. Empty = never escalate.
 BOT_ESCALATION_MENTION = _env("BOT_ESCALATION_MENTION", "")
 # Separate Claude config dir + cwd for bot runs, so the operator's settings
 # (blanket "Bash" allow rules, hooks), memory and CLAUDE.md never apply to an

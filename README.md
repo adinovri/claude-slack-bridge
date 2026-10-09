@@ -163,9 +163,10 @@ and delete lines you don't trust.
 
 **Escalation (`BOT_ESCALATION_MENTION`).** Set it to a mention such as
 `<!subteam^S0123ABCD>` (a user group) or `<@U0123ABCD>`. When the bot judges an
-event a likely real attack it puts the mention on its first line, and the
-`[bg]` watchdog posts it again as a **new** message — Slack doesn't notify on
-mentions added by editing a message.
+event a likely real attack it puts the mention on its first line. The `[bg]`
+watchdog strips it from the analysis and posts it as a **new** message ending
+in `[REAL ATTACK ATTEMPT]` — Slack doesn't notify on mentions added by editing
+a message.
 
 **Finding the bot ID.** Either of:
 - In Slack, open the bot's profile from one of its messages → *Copy member ID*
@@ -593,8 +594,9 @@ BOT_TASK_PROMPT      (empty)     fixed task for bot runs, e.g. "Analyze the aler
 BOT_MEMORY           (off)       1 = keep notes of verified patterns and inject them
                                  into each prompt. Needs BOT_CLAUDE_CONFIG_DIR.
 BOT_ESCALATION_MENTION (empty)   mention put on the first line for a likely real
-                                 attack, e.g. "<!subteam^S0123ABCD>"; re-posted as
-                                 a new message so it notifies. Empty = never.
+                                 attack, e.g. "<!subteam^S0123ABCD>"; moved to a new
+                                 "[REAL ATTACK ATTEMPT]" message so it notifies.
+                                 Empty = never.
 
 # Optional — Telegram fallback for csb-bg / non-Slack csb-bg-claude callers.
 # Keep these OUT of .env; put them in ~/.config/claude-slack-bridge.env

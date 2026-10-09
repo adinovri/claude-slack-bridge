@@ -41,7 +41,8 @@ SLACK_CHUNK_SIZE = 3800
 
 # A result that opens with a mention (user, user group, @here/@channel) is an
 # escalation. Slack does not notify on mentions added by chat.update, so the
-# mention is re-posted as a new message in the thread.
+# mention is stripped from the edited analysis and posted as a new message in
+# the thread instead.
 _LEADING_MENTION = re.compile(
     r"^\s*(<(?:!subteam\^[A-Z0-9]+|@[UW][A-Z0-9]+|!here|!channel)(?:\|[^>]*)?>)"
 )
@@ -114,6 +115,11 @@ def _notify_slack(notify_cfg, result_text):
     channel   = notify_cfg["channel"]
     ack_ts    = notify_cfg["ack_ts"]
     thread_ts = notify_cfg["thread_ts"]
+    # The escalation mention only notifies from the separate post below, so
+    # drop it from the edited analysis.
+    mention = _LEADING_MENTION.match(result_text or "")
+    if mention:
+        result_text = result_text[mention.end():].lstrip() or result_text
     chunks    = _chunk_text(md_to_mrkdwn(result_text))
 
     _slack_api("chat.update", bot_token, {
@@ -127,12 +133,11 @@ def _notify_slack(notify_cfg, result_text):
             "thread_ts": thread_ts,
             "text": f"_(cont. {idx}/{len(chunks)})_\n{extra}",
         })
-    mention = _LEADING_MENTION.match(result_text or "")
     if mention:
         _slack_api("chat.postMessage", bot_token, {
             "channel": channel,
             "thread_ts": thread_ts,
-            "text": f"{mention.group(1)} :rotating_light: escalated — see the analysis above.",
+            "text": f"{mention.group(1)} :rotating_light: escalated — see the analysis above. [REAL ATTACK ATTEMPT]",
         })
 
 
