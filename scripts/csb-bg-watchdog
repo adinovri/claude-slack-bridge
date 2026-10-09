@@ -120,6 +120,9 @@ def _notify_slack(notify_cfg, result_text):
     mention = _LEADING_MENTION.match(result_text or "")
     if mention:
         result_text = result_text[mention.end():].lstrip() or result_text
+    # Set by the bridge when the run used fallback tools (see BOT_FALLBACK_*).
+    if notify_cfg.get("footer"):
+        result_text = f"{(result_text or '').rstrip()}\n\n{notify_cfg['footer']}"
     chunks    = _chunk_text(md_to_mrkdwn(result_text))
 
     _slack_api("chat.update", bot_token, {

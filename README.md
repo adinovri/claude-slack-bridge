@@ -144,6 +144,7 @@ triggered run is never a normal run:
 | Session resume | yes | never resumes an operator session (and vice versa) |
 | Memory | operator's | optional, separate: `BOT_MEMORY` (see below) |
 | Escalation | — | optional `BOT_ESCALATION_MENTION` on likely real attacks |
+| Fallback | — | optional MCP tools when the CLI credentials expire (`BOT_FALLBACK_*`) |
 
 Why `--restricted`: `--allowed-tools` only *adds* to the allow rules in
 settings files. If the operator's settings allow plain `Bash` (common for an
@@ -167,6 +168,27 @@ event a likely real attack it puts the mention on its first line. The `[bg]`
 watchdog strips it from the analysis and posts it as a **new** message ending
 in `[REAL ATTACK ATTEMPT]` — Slack doesn't notify on mentions added by editing
 a message.
+
+**Fallback MCP (`BOT_FALLBACK_MCP_CONFIG`).** When the CLI the bot relies on
+loses its login (say gcloud auth expires), bot runs can switch to read-only MCP
+tools instead. Before each bot run the bridge runs `BOT_FALLBACK_CHECK` (default
+`gcloud auth print-access-token`, cached for a minute). If it fails, the run
+loads the servers in `BOT_FALLBACK_MCP_CONFIG` (a JSON file in `--mcp-config`
+format), allows only the tools in `BOT_FALLBACK_MCP_TOOLS`, and the watchdog
+appends `BOT_FALLBACK_NOTE` to the reply. OAuth servers need a one-time login
+in the bot's config dir:
+
+```bash
+CLAUDE_CONFIG_DIR=$BOT_CLAUDE_CONFIG_DIR claude mcp add -s user --transport http \
+  --callback-port 8765 <name> <url>
+CLAUDE_CONFIG_DIR=$BOT_CLAUDE_CONFIG_DIR claude mcp login <name>
+# headless host: ssh -L 8765:localhost:8765 <host> and open the printed URL locally
+```
+
+Keep the server entry in the JSON file identical to the one `mcp add` wrote,
+so the stored login matches. List every tool you allow by its full
+`mcp__<server>__<tool>` name: anything not listed is denied, which keeps write
+tools on the same server out of reach.
 
 **Finding the bot ID.** Either of:
 - In Slack, open the bot's profile from one of its messages → *Copy member ID*
@@ -196,7 +218,7 @@ PY
 
 Then set `TRIGGER_BOT_IDS`, `BOT_CLAUDE_CONFIG_DIR`, `BOT_WORKSPACE` (and
 optionally `BOT_CONTEXT_CHANNEL`, `BOT_TASK_PROMPT`, `BOT_MEMORY`,
-`BOT_ESCALATION_MENTION`) and restart. The startup log confirms it:
+`BOT_ESCALATION_MENTION`, `BOT_FALLBACK_*`) and restart. The startup log confirms it:
 `bot triggers enabled (untrusted mode): ['B…']`. Invite the bot that posts the
 workflow messages and this app to the same channels.
 
@@ -593,6 +615,12 @@ BOT_TASK_PROMPT      (empty)     fixed task for bot runs, e.g. "Analyze the aler
                                  The bot's message can narrow it, never replace it.
 BOT_MEMORY           (off)       1 = keep notes of verified patterns and inject them
                                  into each prompt. Needs BOT_CLAUDE_CONFIG_DIR.
+BOT_FALLBACK_MCP_CONFIG (empty)  JSON file of MCP servers loaded when
+                                 BOT_FALLBACK_CHECK fails. Empty = no fallback.
+BOT_FALLBACK_MCP_TOOLS (empty)   comma-separated MCP tools allowed in fallback runs.
+BOT_FALLBACK_CHECK   gcloud auth print-access-token
+                                 command whose failure switches to the fallback.
+BOT_FALLBACK_NOTE    (see config) note appended to replies from fallback runs.
 BOT_ESCALATION_MENTION (empty)   mention put on the first line for a likely real
                                  attack, e.g. "<!subteam^S0123ABCD>"; moved to a new
                                  "[REAL ATTACK ATTEMPT]" message so it notifies.

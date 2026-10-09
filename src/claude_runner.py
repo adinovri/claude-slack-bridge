@@ -3,13 +3,18 @@ import json
 import logging
 import os
 import re
+import shlex
 import subprocess
+import time
 from pathlib import Path
 
 from .config import (
     BOT_ALLOWED_TOOLS,
     BOT_CLAUDE_CONFIG_DIR,
     BOT_DISALLOWED_TOOLS,
+    BOT_FALLBACK_CHECK,
+    BOT_FALLBACK_MCP_CONFIG,
+    BOT_FALLBACK_MCP_TOOLS,
     BOT_MEMORY,
     BOT_WORKSPACE,
     CLAUDE_CLI,
@@ -53,7 +58,37 @@ def bot_memory_dir() -> Path | None:
     return Path(BOT_CLAUDE_CONFIG_DIR).expanduser() / "projects" / mangled / "memory"
 
 
-def restricted_args() -> list[str]:
+_fallback_cache: tuple[float, bool] | None = None
+_FALLBACK_CACHE_SECS = 60
+
+
+def fallback_needed() -> bool:
+    """True when bot runs should use the fallback MCP tools: a fallback is
+    configured and BOT_FALLBACK_CHECK fails (e.g. gcloud auth expired). Cached
+    for a minute so a burst of alerts runs the check once."""
+    global _fallback_cache
+    if not BOT_FALLBACK_MCP_CONFIG:
+        return False
+    now = time.monotonic()
+    if _fallback_cache and now - _fallback_cache[0] < _FALLBACK_CACHE_SECS:
+        return _fallback_cache[1]
+    try:
+        ok = subprocess.run(
+            shlex.split(BOT_FALLBACK_CHECK),
+            env=restricted_env(os.environ),
+            capture_output=True,
+            timeout=30,
+        ).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        ok = False
+    if not ok:
+        log.warning("BOT_FALLBACK_CHECK failed (%s); bot runs use the fallback MCP tools",
+                    BOT_FALLBACK_CHECK)
+    _fallback_cache = (now, not ok)
+    return not ok
+
+
+def restricted_args(fallback: bool = False) -> list[str]:
     """CLI flags for an untrusted (bot-triggered) run. Shared by the default
     runner and the [bg] runner (passed to csb-bg-claude) so both enforce the
     same limits.
@@ -62,6 +97,8 @@ def restricted_args() -> list[str]:
     to their allow rules, and the operator's settings allow plain "Bash"),
     drops code-running tools not named in --tools, and confines file tools to
     the cwd plus --add-dir — here only the bot memory dir, if enabled.
+    With fallback, the BOT_FALLBACK_MCP_CONFIG servers are loaded and
+    BOT_FALLBACK_MCP_TOOLS allowed; everything else on them stays denied.
     """
     memory = bot_memory_dir()
     tools = "Bash,Read,Write,Edit" if memory else "Bash"
@@ -75,6 +112,10 @@ def restricted_args() -> list[str]:
         denied = [t for t in denied if t not in ("Read", "Write", "Edit")]
         allowed.append(f"Edit(/{memory}/**)")  # "//abs/path"; covers Write too
         extra = ["--add-dir", str(memory)]
+    mcp_config = '{"mcpServers":{}}'
+    if fallback and BOT_FALLBACK_MCP_CONFIG:
+        mcp_config = str(Path(BOT_FALLBACK_MCP_CONFIG).expanduser())
+        allowed += BOT_FALLBACK_MCP_TOOLS
     return [
         "--restricted",
         "--tools", tools,
@@ -83,7 +124,7 @@ def restricted_args() -> list[str]:
         *extra,
         "--allowed-tools", *allowed,
         "--disallowed-tools", *DISALLOWED_TOOLS, *denied,
-        "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+        "--strict-mcp-config", "--mcp-config", mcp_config,
     ]
 
 

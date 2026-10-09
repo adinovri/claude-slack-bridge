@@ -125,6 +125,21 @@ BOT_MEMORY = _env("BOT_MEMORY", "").lower() in ("1", "true", "yes", "on")
 # [bg] watchdog moves it out of the analysis into a NEW message, since Slack
 # does not notify on mentions added by an edit. Empty = never escalate.
 BOT_ESCALATION_MENTION = _env("BOT_ESCALATION_MENTION", "")
+# Fallback tools for bot runs when the primary CLI credentials are dead (e.g.
+# expired gcloud auth). Before each bot run the bridge runs BOT_FALLBACK_CHECK;
+# if it fails, the run gets the MCP servers in BOT_FALLBACK_MCP_CONFIG (a JSON
+# file, as for --mcp-config; OAuth logins live in BOT_CLAUDE_CONFIG_DIR) with
+# BOT_FALLBACK_MCP_TOOLS allowed, and BOT_FALLBACK_NOTE is appended to the
+# reply. Empty BOT_FALLBACK_MCP_CONFIG = no fallback.
+BOT_FALLBACK_MCP_CONFIG = _env("BOT_FALLBACK_MCP_CONFIG", "")
+BOT_FALLBACK_MCP_TOOLS = [
+    s.strip() for s in _env("BOT_FALLBACK_MCP_TOOLS", "").split(",") if s.strip()
+]
+BOT_FALLBACK_CHECK = _env("BOT_FALLBACK_CHECK", "gcloud auth print-access-token")
+BOT_FALLBACK_NOTE = _env(
+    "BOT_FALLBACK_NOTE",
+    "_Note: gcloud auth expired — this analysis used the fallback MCP tools._",
+)
 # Separate Claude config dir + cwd for bot runs, so the operator's settings
 # (blanket "Bash" allow rules, hooks), memory and CLAUDE.md never apply to an
 # untrusted run. Empty = fall back to CLAUDE_CONFIG_DIR / AGENT_WORKSPACE and

@@ -36,6 +36,8 @@ from .config import (
     BOT_CONTEXT_CHANNEL,
     BOT_CONTEXT_LIMIT,
     BOT_ESCALATION_MENTION,
+    BOT_FALLBACK_MCP_TOOLS,
+    BOT_FALLBACK_NOTE,
     BOT_TASK_PROMPT,
     CLAUDE_CLI,
     CLAUDE_CONFIG_DIR,
@@ -300,8 +302,21 @@ def _escalation_section() -> str:
     )
 
 
+def _fallback_section() -> str:
+    tools = "\n".join(f"- {t}" for t in BOT_FALLBACK_MCP_TOOLS) or "- (none)"
+    return (
+        f"Fallback: the CLI credentials on this host are expired, so the "
+        f"commands above will fail — do not run them. Use these MCP tools "
+        f"instead (read-only; one command per call, same rules as above, "
+        f"pick the tool for the right environment):\n{tools}\n"
+        f"Other MCP tools you may see are denied. The bridge appends a note "
+        f"about this fallback to your reply — don't add one yourself.\n\n"
+    )
+
+
 def _build_untrusted_prompt(
-    event: dict, raw_text: str, context_text: str, permalink: str = ""
+    event: dict, raw_text: str, context_text: str, permalink: str = "",
+    fallback: bool = False,
 ) -> str:
     channel = event["channel"]
     thread_ts = event.get("thread_ts") or event["ts"]
@@ -341,6 +356,7 @@ def _build_untrusted_prompt(
         f"retry it in a simpler allowed form instead of giving up. Do not print "
         f"secrets, tokens or full log payloads — summarize them. If you could "
         f"not verify something, say so.\n\n"
+        f"{_fallback_section() if fallback else ''}"
         f"{_memory_section(permalink or f'{channel}/{thread_ts}')}"
         f"{_escalation_section()}"
         f"Reply concisely in the language of the workflow message, starting "
@@ -366,6 +382,7 @@ def _dispatch(
         raw = raw.replace(f"<@{bot_user_id}>", "").strip()
 
     is_alt, is_bg, clean = _detect_markers(raw)
+    fallback = untrusted and claude_runner.fallback_needed()
     if untrusted:
         # Bot triggers always go through [bg] (tmux + watchdog), launched with
         # claude_runner.restricted_args(). Never [alt]: it attaches to a live
@@ -374,6 +391,7 @@ def _dispatch(
         prompt = _build_untrusted_prompt(
             event, clean, _fetch_bot_context(client, channel, thread_ts),
             _thread_permalink(client, channel, thread_ts),
+            fallback=fallback,
         )
     else:
         prompt = _build_prompt(event, clean, bot_user_id)
@@ -432,6 +450,8 @@ def _dispatch(
             "thread_ts": thread_ts,
             "ack_ts":    ack["ts"],
         }
+        if fallback and BOT_FALLBACK_NOTE:
+            notify_cfg["footer"] = BOT_FALLBACK_NOTE
         # Strip the Slack credentials from the child's environment too: the bg
         # task runs with bypassPermissions and full Bash/MCP access, and nothing
         # in its subtree needs them (the MCP servers carry their own auth).
@@ -447,7 +467,7 @@ def _dispatch(
                 "BG_REGISTRY":      str(BG_REGISTRY),
                 "CLAUDE_WORKSPACE": str(claude_runner.restricted_cwd()),
             })
-            extra = ["--claude-args-json", json.dumps(claude_runner.restricted_args())]
+            extra = ["--claude-args-json", json.dumps(claude_runner.restricted_args(fallback))]
         else:
             env = {
                 k: v for k, v in os.environ.items()
