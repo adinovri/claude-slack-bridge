@@ -16,6 +16,7 @@ from .config import (
     BOT_FALLBACK_MCP_CONFIG,
     BOT_FALLBACK_MCP_TOOLS,
     BOT_MEMORY,
+    BOT_MODEL,
     BOT_WORKSPACE,
     CLAUDE_CLI,
     CLAUDE_MODEL,
@@ -154,7 +155,7 @@ def run(
         "-p",
         prompt,
         "--model",
-        CLAUDE_MODEL,
+        BOT_MODEL if restricted else CLAUDE_MODEL,
         "--output-format",
         "json",
     ]

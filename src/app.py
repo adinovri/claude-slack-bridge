@@ -38,6 +38,7 @@ from .config import (
     BOT_ESCALATION_MENTION,
     BOT_FALLBACK_MCP_TOOLS,
     BOT_FALLBACK_NOTE,
+    BOT_MODEL,
     BOT_TASK_PROMPT,
     CLAUDE_CLI,
     CLAUDE_CONFIG_DIR,
@@ -481,7 +482,7 @@ def _dispatch(
             env = claude_runner.restricted_env(os.environ)
             env.update({
                 "CLAUDE_CLI":       CLAUDE_CLI,
-                "CLAUDE_MODEL":     CLAUDE_MODEL,
+                "CLAUDE_MODEL":     BOT_MODEL,
                 "BG_REGISTRY":      str(BG_REGISTRY),
                 "CLAUDE_WORKSPACE": str(claude_runner.restricted_cwd()),
             })

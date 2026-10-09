@@ -572,6 +572,7 @@ CLAUDE_CONFIG_DIR    ~/.claude   claude CLI config dir (OAuth creds + JSONL tran
                                  Multi-account setups pin this per-service in the
                                  systemd unit, not in .env.
 CLAUDE_MODEL         claude-sonnet-4-6
+BOT_MODEL            (CLAUDE_MODEL)  model for bot-triggered runs
 CLAUDE_PERMISSION_MODE  bypassPermissions
 CLAUDE_TIMEOUT       600         max seconds to wait for any response
 

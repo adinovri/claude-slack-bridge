@@ -38,6 +38,8 @@ AGENT_NAME = _env("AGENT_NAME", "Claude")
 
 CLAUDE_CLI = _env("CLAUDE_CLI", "claude")
 CLAUDE_MODEL = _env("CLAUDE_MODEL", "claude-sonnet-4-6")
+# Model for bot-triggered (untrusted) runs. Empty = CLAUDE_MODEL.
+BOT_MODEL = _env("BOT_MODEL", "") or CLAUDE_MODEL
 CLAUDE_PERMISSION_MODE = _env("CLAUDE_PERMISSION_MODE", "bypassPermissions")
 CLAUDE_TIMEOUT = int(_env("CLAUDE_TIMEOUT", "600"))
 
