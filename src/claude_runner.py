@@ -73,20 +73,38 @@ def fallback_needed() -> bool:
     now = time.monotonic()
     if _fallback_cache and now - _fallback_cache[0] < _FALLBACK_CACHE_SECS:
         return _fallback_cache[1]
+    # One retry: a transient failure (timeout, a locked credential store while
+    # other runs use gcloud) must not cut a run off from the CLI.
+    for attempt in range(2):
+        ok, err = _run_fallback_check()
+        if ok:
+            break
+        log.warning("BOT_FALLBACK_CHECK failed (%s, attempt %d): %s",
+                    BOT_FALLBACK_CHECK, attempt + 1, err)
+        if attempt == 0:
+            time.sleep(5)
+    if not ok:
+        log.warning("bot runs use the fallback MCP tools")
+    _fallback_cache = (now, not ok)
+    return not ok
+
+
+def _run_fallback_check() -> tuple[bool, str]:
     try:
-        ok = subprocess.run(
+        r = subprocess.run(
             shlex.split(BOT_FALLBACK_CHECK),
             env=restricted_env(os.environ),
             capture_output=True,
+            text=True,
             timeout=30,
-        ).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        ok = False
-    if not ok:
-        log.warning("BOT_FALLBACK_CHECK failed (%s); bot runs use the fallback MCP tools",
-                    BOT_FALLBACK_CHECK)
-    _fallback_cache = (now, not ok)
-    return not ok
+        )
+    except subprocess.TimeoutExpired:
+        return False, "timed out after 30s"
+    except OSError as e:
+        return False, str(e)
+    # stdout is the token itself — never log it.
+    err = " ".join(r.stderr.split())[:300]
+    return r.returncode == 0, f"exit {r.returncode}: {err}"
 
 
 def restricted_args(fallback: bool = False) -> list[str]:
