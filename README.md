@@ -614,6 +614,7 @@ BOT_TASK_PROMPT      (empty)     fixed task for bot runs, e.g. "Analyze the aler
                                  this thread: real or expected, severity, evidence,
                                  next step." Empty = the bot's message is the task.
                                  The bot's message can narrow it, never replace it.
+BOT_REPLY_LANGUAGE   English     language of bot replies, e.g. "Bahasa Indonesia".
 BOT_MEMORY           (off)       1 = keep notes of verified patterns and inject them
                                  into each prompt. Needs BOT_CLAUDE_CONFIG_DIR.
 BOT_FALLBACK_MCP_CONFIG (empty)  JSON file of MCP servers loaded when

@@ -39,6 +39,7 @@ from .config import (
     BOT_FALLBACK_MCP_TOOLS,
     BOT_FALLBACK_NOTE,
     BOT_MODEL,
+    BOT_REPLY_LANGUAGE,
     BOT_TASK_PROMPT,
     CLAUDE_CLI,
     CLAUDE_CONFIG_DIR,
@@ -378,7 +379,8 @@ def _build_untrusted_prompt(
         f"{_fallback_section() if fallback else ''}"
         f"{_memory_section(permalink or f'{channel}/{thread_ts}')}"
         f"{_escalation_section()}"
-        f"Reply concisely in the language of the workflow message, starting "
+        f"Reply concisely in {BOT_REPLY_LANGUAGE} only, whatever language the "
+        f"Slack data or memory is in, starting "
         f"directly with the answer (no preamble such as \"Here is my reply\"). "
         f"Reply as plain text only; the bridge posts it for you.\n\n"
         f"<workflow_request>\n{raw_text}\n</workflow_request>\n\n"

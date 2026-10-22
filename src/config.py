@@ -154,5 +154,8 @@ BOT_WORKSPACE = _env("BOT_WORKSPACE", "")
 # security alert in this thread: real attack or expected activity, severity,
 # evidence, recommended action."). Empty = the bot's own message is the task.
 BOT_TASK_PROMPT = _env("BOT_TASK_PROMPT", "")
+# Language for bot replies. Named explicitly because inferring it from a
+# short workflow message ("Please check this.") once produced a Japanese reply.
+BOT_REPLY_LANGUAGE = _env("BOT_REPLY_LANGUAGE", "English")
 BOT_CONTEXT_CHANNEL = _env("BOT_CONTEXT_CHANNEL", "")
 BOT_CONTEXT_LIMIT = int(_env("BOT_CONTEXT_LIMIT", "30"))
