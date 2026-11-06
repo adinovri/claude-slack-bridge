@@ -477,6 +477,31 @@ def _pending_prompt(tmux_name):
     return None
 
 
+# Claude Code prints these as its own reply line ("● ...") when the account
+# login has expired; the session then idles at the prompt with no end_turn in
+# the transcript, so without this check it is never notified or reaped and
+# the Slack ack stays "running in the background" forever. Anchored to the
+# "● " reply marker at column 0 and the last lines of the pane: the echoed
+# prompt (which carries untrusted Slack text) is indented, so alert text that
+# merely contains these words cannot trigger it.
+_AUTH_FAILURE = re.compile(
+    r"^● .*(Login reached its time limit|Please run /login"
+    r"|OAuth token has expired|Invalid API key)",
+    re.M,
+)
+AUTH_FAILURE_TAIL_LINES = 20
+
+
+def _auth_failure(tmux_name):
+    """Return Claude Code's login-failure line if the pane ends on one, else None."""
+    r = _tmux("capture-pane", "-p", "-t", tmux_name, "-S", "-60")
+    if r.returncode != 0:
+        return None
+    lines = [ln for ln in r.stdout.splitlines() if ln.strip()]
+    m = _AUTH_FAILURE.search("\n".join(lines[-AUTH_FAILURE_TAIL_LINES:]))
+    return m.group(0)[2:].strip()[:200] if m else None
+
+
 def _check_prompt_stall(entry):
     """Track a pending permission dialog on the entry; notify once when stalled."""
     question = _pending_prompt(entry["tmux_name"])
@@ -535,6 +560,16 @@ def check_entries():
 
         if not _session_alive(tmux_name):
             _dispatch_fail(entry, last_text, reason="died")
+            continue
+
+        auth_err = _auth_failure(tmux_name)
+        if auth_err:
+            subprocess.run(["logger", "-t", "csb-bg-watchdog",
+                            f"{tmux_name} stopped, Claude login expired: {auth_err}"])
+            _dispatch_fail(entry, last_text,
+                           reason=f"Claude login expired on the bot host ({auth_err}); "
+                                  "run /login there first")
+            _tmux("kill-session", "-t", tmux_name)
             continue
 
         _check_prompt_stall(entry)
