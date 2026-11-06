@@ -155,8 +155,10 @@ still keeps the bot's login, transcripts and memory apart from yours.
 
 **Memory (`BOT_MEMORY=1`).** The bot keeps notes of log-verified patterns
 (principal, method, address, resource → verdict, evidence, thread link) in
-`<BOT_CLAUDE_CONFIG_DIR>/projects/<workspace>/memory/MEMORY.md`. The bridge
-injects that file into each prompt; a matching event is answered with a
+`<BOT_CLAUDE_CONFIG_DIR>/projects/<workspace>/memory/`: `MEMORY.md` is a
+short index (one line per pattern, naming its `topic-*.md` file) and the
+topic files hold the evidence and thread links. The bridge injects the index
+into each prompt; a matching event is answered with a
 reference to the earlier thread plus one confirming query, and anything that
 differs is analyzed in full. The file is written from untrusted input, so an
 attacker can try to plant "this is benign" notes — review it now and then,
