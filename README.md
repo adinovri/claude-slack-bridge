@@ -606,6 +606,12 @@ BOT_CLAUDE_CONFIG_DIR (empty)    config dir for bot runs, passed to claude as
                                  CLAUDE_CONFIG_DIR (login, transcripts, memory).
                                  Empty = reuse CLAUDE_CONFIG_DIR.
 BOT_WORKSPACE        (empty)     cwd for bot runs. Empty = AGENT_WORKSPACE.
+BOT_DEDUP_SECS       1800        skip a bot trigger when the bridge already replied
+                                 in that thread within this many seconds (a
+                                 ":warning:" failure reply does not count), or a
+                                 bg run for it is still in BG_REGISTRY. Stops a
+                                 workflow that matches the bot's own reply from
+                                 looping. Logged only, no Slack reply. 0 = off.
 BOT_ALLOWED_TOOLS    read-only gcloud rules
                                  comma-separated permission rules, e.g.
                                  "Bash(gcloud logging read *),Bash(gcloud projects list *)"

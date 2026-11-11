@@ -85,6 +85,10 @@ LOG_LEVEL = _env("LOG_LEVEL", "INFO")
 TRIGGER_BOT_IDS = frozenset(
     s.strip() for s in _env("TRIGGER_BOT_IDS", "").split(",") if s.strip()
 )
+# Skip a bot trigger when the same thread already got a bridge reply (or has a
+# bot run in flight) within this many seconds. Stops a workflow that matches
+# on the bot's own reply from re-triggering the thread in a loop. 0 = off.
+BOT_DEDUP_SECS = int(_env("BOT_DEDUP_SECS", "1800"))
 # Read-only tools for bot runs, one rule per entry (comma-separated in env).
 # Keep every rule an exact subcommand + trailing " *": a mid-command wildcard
 # like "gcloud * list *" also matches "gcloud secrets versions access ... list".

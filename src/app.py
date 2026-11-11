@@ -23,7 +23,7 @@ from pathlib import Path
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-from . import alt_runner, claude_runner, thread_store
+from . import alt_runner, bot_dedup, claude_runner, thread_store
 from .slack_format import md_to_mrkdwn
 from .config import (
     AGENT_NAME,
@@ -35,6 +35,7 @@ from .config import (
     BOT_ALLOWED_TOOLS,
     BOT_CONTEXT_CHANNEL,
     BOT_CONTEXT_LIMIT,
+    BOT_DEDUP_SECS,
     BOT_ESCALATION_MENTION,
     BOT_FALLBACK_MCP_TOOLS,
     BOT_FALLBACK_NOTE,
@@ -396,6 +397,31 @@ def _build_untrusted_prompt(
     )
 
 
+def _skip_repeat_bot_trigger(client, channel: str, thread_ts: str, bot_user_id: str | None) -> bool:
+    """True when a bot trigger repeats a thread the bridge already handles
+    (see bot_dedup). Logged, not answered: a reply would feed the loop."""
+    if BOT_DEDUP_SECS <= 0:
+        return False
+    try:
+        registry = json.loads(BG_REGISTRY.read_text())
+    except Exception:
+        registry = []
+    try:
+        thread = client.conversations_replies(
+            channel=channel, ts=thread_ts, limit=200
+        ).get("messages", [])
+    except Exception:
+        log.exception("dedup: conversations.replies failed; not deduping")
+        thread = []
+    reason = bot_dedup.skip_reason(
+        thread_ts, BOT_DEDUP_SECS, registry, thread, bot_user_id
+    )
+    if reason:
+        log.info("skip repeated bot trigger: thread_ts=%s reason=%s", thread_ts, reason)
+        return True
+    return False
+
+
 def _dispatch(
     event: dict, client, bot_user_id: str | None, untrusted: bool = False
 ) -> None:
@@ -411,6 +437,8 @@ def _dispatch(
         raw = raw.replace(f"<@{bot_user_id}>", "").strip()
 
     is_alt, is_bg, clean = _detect_markers(raw)
+    if untrusted and _skip_repeat_bot_trigger(client, channel, thread_ts, bot_user_id):
+        return
     fallback = untrusted and claude_runner.fallback_needed()
     if untrusted:
         # Bot triggers always go through [bg] (tmux + watchdog), launched with
