@@ -612,6 +612,12 @@ BOT_DEDUP_SECS       1800        skip a bot trigger when the bridge already repl
                                  bg run for it is still in BG_REGISTRY. Stops a
                                  workflow that matches the bot's own reply from
                                  looping. Logged only, no Slack reply. 0 = off.
+SLACK_TRIGGER_PHRASES "Log match condition with labels"
+                                 "|"-separated phrases a Slack workflow triggers
+                                 on. Every outgoing message (bridge and watchdog)
+                                 rewrites them, e.g. "log-match condition
+                                 (labels)", so a reply quoting an alert cannot
+                                 re-trigger its thread. Empty = off.
 BOT_ALLOWED_TOOLS    read-only gcloud rules
                                  comma-separated permission rules, e.g.
                                  "Bash(gcloud logging read *),Bash(gcloud projects list *)"

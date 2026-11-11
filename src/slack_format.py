@@ -4,6 +4,7 @@ Slack `text` uses its own dialect: *bold*, _italic_, ~strike~, <url|label>,
 and no headings. Claude replies in standard Markdown, so `**bold**` shows up
 raw in the thread. Code spans/blocks are protected and left untouched.
 """
+import os
 import re
 
 _FENCE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
@@ -27,6 +28,41 @@ _IPV4 = re.compile(
     r"(?:/\d{1,2})?(?![A-Za-z0-9/]|\.\d)"
 )
 _SLACK_LINK = re.compile(r"<[^<>\n]+>")
+
+# Phrases a Slack workflow triggers on (Team Nudge re-mentions the bot when a
+# message contains "Log match condition with labels", and this bot counts as
+# an app). A reply that quotes one would re-trigger its own thread, so they
+# are rewritten in every outgoing message, code spans included. "|"-separated
+# in SLACK_TRIGGER_PHRASES; empty turns the guard off.
+_TRIGGER_PHRASES = [
+    p.strip() for p in os.environ.get(
+        "SLACK_TRIGGER_PHRASES", "Log match condition with labels"
+    ).split("|") if p.strip()
+]
+# Words may be split by spaces, newlines or mrkdwn/code markers (*, _, `, ~).
+_TRIGGER_RX = [
+    re.compile(r"[\s*_`~]+".join(re.escape(w) for w in p.split()), re.IGNORECASE)
+    for p in _TRIGGER_PHRASES
+]
+
+
+def defuse_triggers(text: str) -> str:
+    """Rewrite workflow trigger phrases so the message cannot fire them:
+    "Log match condition with labels" -> "log-match condition (labels)"."""
+    for rx in _TRIGGER_RX:
+        text = rx.sub(_defused, text)
+    return text
+
+
+def _defused(m: re.Match) -> str:
+    words = re.split(r"[\s*_`~]+", m.group(0))
+    if len(words) >= 2:
+        out = f"{words[0]}-{words[1]}"
+        rest = words[2:]
+        if len(rest) >= 2 and rest[-2].lower() == "with":
+            return f"{out} {' '.join(rest[:-2])} ({rest[-1]})".replace("  ", " ")
+        return " ".join([out, *rest])
+    return words[0] + "\u200b"
 
 
 def md_to_mrkdwn(text: str) -> str:
@@ -59,4 +95,5 @@ def md_to_mrkdwn(text: str) -> str:
     text = _SLACK_LINK.sub(lambda m: _protect(m.group(0)), text)
     text = _IPV4.sub(lambda m: _protect(f"`{m.group(0)}`"), text)
 
-    return re.sub(r"\x00(\d+)\x00", lambda m: protected[int(m.group(1))], text)
+    text = re.sub(r"\x00(\d+)\x00", lambda m: protected[int(m.group(1))], text)
+    return defuse_triggers(text)
