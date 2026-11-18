@@ -126,15 +126,43 @@ def _is_interstitial(pane):
     return bool(_MENU_CURSOR_RE.search(pane)) or "Enter to confirm" in pane
 
 
-def _wait_ready(tmux_name):
+def _is_add_dir_prompt(pane, allowed_dirs):
+    """True for Claude Code's "Adding a new directory ... trust it?" dialog,
+    but only when the directory is one the bridge itself passed via --add-dir.
+    The default option is "No, exit", so a blind Enter quits the TUI."""
+    flat = re.sub(r"\s+", "", pane)  # the path wraps across lines in the pane
+    return "Addinganewdirectory" in flat and any(
+        re.sub(r"\s+", "", d) in flat for d in allowed_dirs
+    )
+
+
+def _wait_ready(tmux_name, allowed_dirs=()):
     deadline = time.monotonic() + TUI_BOOT
     last_pane = None
     stable_hits = 0
     dismissed = 0
+    accepted = 0
     while time.monotonic() < deadline:
         if not _session_alive(tmux_name):
             return False
         pane = _tmux("capture-pane", "-p", "-t", tmux_name).stdout
+        if _is_add_dir_prompt(pane, allowed_dirs) and accepted < 3:
+            # The answer only holds for this session, so it is asked on every
+            # launch. Down moves the cursor from "No, exit" to "Yes, add it".
+            _tmux("send-keys", "-t", tmux_name, "Down")
+            time.sleep(0.3)
+            _tmux("send-keys", "-t", tmux_name, "Enter")
+            accepted += 1
+            stable_hits = 0
+            last_pane = None
+            time.sleep(0.8)
+            continue
+        if "No, exit" in pane and "Enter to confirm" in pane:
+            # Some other trust/confirm dialog defaulting to "No, exit": never
+            # confirm it blindly.
+            print("[csb-bg-claude] unexpected confirm dialog (default 'No, exit'); "
+                  "not confirming it", file=sys.stderr)
+            return False
         if _is_interstitial(pane) and dismissed < 5:
             _tmux("send-keys", "-t", tmux_name, "Enter")
             dismissed += 1
@@ -294,8 +322,11 @@ def main():
 
     jsonl = _transcript_path(claude_uuid)
 
+    allowed_dirs = []
     if args.claude_args_json:
         restricted_args = json.loads(args.claude_args_json)
+        allowed_dirs = [restricted_args[i + 1] for i, a in enumerate(restricted_args[:-1])
+                        if a == "--add-dir"]
         # `env -i`: the pane would otherwise inherit the tmux server's global
         # environment, which is whatever the first tmux client happened to have.
         env_prefix = [
@@ -324,7 +355,7 @@ def main():
         print(f"[csb-bg-claude] tmux spawn failed: {r.stderr.strip()}", file=sys.stderr)
         sys.exit(1)
 
-    if not _wait_ready(tmux_name):
+    if not _wait_ready(tmux_name, allowed_dirs):
         print("[csb-bg-claude] TUI boot timeout — continuing optimistically", file=sys.stderr)
 
     tail_offset = jsonl.stat().st_size if jsonl.exists() else 0
