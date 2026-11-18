@@ -539,11 +539,30 @@ def _dispatch(
                 "CLAUDE_WORKSPACE":  str(AGENT_WORKSPACE),
             })
             extra = []
-        subprocess.Popen(
+        proc = subprocess.Popen(
             ["python3", CSB_BG_CLAUDE, f"slack:{thread_ts[:12]}", prompt,
              "--notify-json", json.dumps(notify_cfg), *extra],
             env=env,
         )
+
+        def _watch_launch(proc=proc, channel=channel, ack_ts=ack["ts"]):
+            # csb-bg-claude registers the run only after the TUI accepted the
+            # prompt. If it exits non-zero first (TUI never booted / prompt not
+            # submitted), nothing is in the bg registry, so the watchdog never
+            # replaces the ack. Do it here: only the bridge holds the Slack token.
+            try:
+                rc = proc.wait()
+                if rc != 0:
+                    client.chat_update(
+                        channel=channel, ts=ack_ts,
+                        text=":warning: Background task failed to start "
+                             f"(launcher exit {rc}: TUI did not accept the prompt) "
+                             "— send the message again to retry.",
+                    )
+            except Exception:
+                log.exception("bg launch watcher failed")
+
+        threading.Thread(target=_watch_launch, daemon=True).start()
         log.info("bg task launched via csb-bg-claude: thread_ts=%s siblings=%d restricted=%s",
                  thread_ts, len(siblings), untrusted)
         return  # watchdog handles ack update + cleanup
