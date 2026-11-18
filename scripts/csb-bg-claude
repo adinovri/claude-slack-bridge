@@ -91,7 +91,7 @@ REGISTRY_FILE = Path(os.environ.get(
     "BG_REGISTRY",
     str(Path.home() / ".claude-slack-bridge" / "bg_registry.json"),
 ))
-TUI_BOOT      = float(os.environ.get("BRIDGE_TUI_BOOT",  "20"))
+TUI_BOOT      = float(os.environ.get("BRIDGE_TUI_BOOT",  "60"))
 
 _STATUSBAR_RE   = re.compile(r"\d[\d.]*K?/\d[\d.]*K")
 _MENU_CURSOR_RE = re.compile(r"^\s*❯\s*\d+\.", re.M)
